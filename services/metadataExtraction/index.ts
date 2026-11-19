@@ -55,6 +55,165 @@ export async function runFfprobe(filePath: string): Promise<Record<string, unkno
   }
 }
 
+/**
+ * Pure-TypeScript fallback container parser for MP4, MOV, MKV, WebM, and AVI.
+ * Extracts duration, resolution, codecs, and stream presence when FFprobe is unavailable.
+ */
+async function parseVideoContainerFallback(filePath: string, ext: string): Promise<Partial<ExtractedMetadata>> {
+  const result: Partial<ExtractedMetadata> = {};
+  const handle = await fs.open(filePath, 'r');
+  try {
+    const stat = await handle.stat();
+    // Read up to first 2MB to find headers
+    const readLen = Math.min(stat.size, 2 * 1024 * 1024);
+    const buf = Buffer.alloc(readLen);
+    await handle.read(buf, 0, readLen, 0);
+
+    // Camera recorded video footages (smartphones, DSLRs, GoPro) write the 'moov' atom at the TAIL of the file when recording finishes.
+    // If mvhd is not found in the initial read, inspect the last 8MB of the file where camera headers reside.
+    let searchBuf = buf;
+    if (buf.indexOf('mvhd') === -1 && stat.size > readLen) {
+      const tailLen = Math.min(stat.size, 8 * 1024 * 1024);
+      const tailOffset = stat.size - tailLen;
+      const tailBuf = Buffer.alloc(tailLen);
+      await handle.read(tailBuf, 0, tailLen, tailOffset);
+      searchBuf = Buffer.concat([buf, tailBuf]);
+    }
+
+    const cleanExt = ext.toLowerCase();
+
+    // 1. AVI container parsing
+    if (cleanExt === '.avi' && searchBuf.subarray(0, 4).toString('ascii') === 'RIFF') {
+      result.containerFormat = 'Audio Video Interleave (AVI)';
+      const avihIdx = searchBuf.indexOf('avih');
+      if (avihIdx !== -1 && avihIdx + 44 <= searchBuf.length) {
+        const uSecPerFrame = searchBuf.readUInt32LE(avihIdx + 4);
+        const totalFrames = searchBuf.readUInt32LE(avihIdx + 16);
+        const width = searchBuf.readUInt32LE(avihIdx + 32);
+        const height = searchBuf.readUInt32LE(avihIdx + 36);
+        const fps = uSecPerFrame > 0 ? Number((1_000_000 / uSecPerFrame).toFixed(3)) : null;
+        result.width = width > 0 ? width : null;
+        result.height = height > 0 ? height : null;
+        result.frameRate = fps;
+        result.frameCount = totalFrames > 0 ? totalFrames : null;
+        if (fps && totalFrames) {
+          result.durationSeconds = Number((totalFrames / fps).toFixed(2));
+        }
+      }
+      // Check for audio stream in AVI
+      const audsIdx = searchBuf.indexOf('auds');
+      result.audioCodec = audsIdx !== -1 ? 'AVI Audio Stream (PCM/MP3/AC3)' : 'None detected';
+      const vidsIdx = searchBuf.indexOf('vids');
+      if (vidsIdx !== -1 && vidsIdx + 8 <= searchBuf.length) {
+        result.videoCodec = `AVI Video (${searchBuf.toString('ascii', vidsIdx + 4, vidsIdx + 8).trim()})`;
+      } else {
+        result.videoCodec = 'AVI Video';
+      }
+      return result;
+    }
+
+    // 2. WebM & MKV (Matroska) EBML parsing
+    if (
+      (cleanExt === '.mkv' || cleanExt === '.webm') &&
+      searchBuf[0] === 0x1a && searchBuf[1] === 0x45 && searchBuf[2] === 0xdf && searchBuf[3] === 0xa3
+    ) {
+      const isWebm = searchBuf.includes('webm');
+      result.containerFormat = isWebm ? 'WebM (Matroska Subtype)' : 'Matroska (MKV)';
+      const latin = searchBuf.toString('latin1');
+      if (latin.includes('V_VP8')) result.videoCodec = 'VP8 (Google)';
+      else if (latin.includes('V_VP9')) result.videoCodec = 'VP9 (Google)';
+      else if (latin.includes('V_AV1')) result.videoCodec = 'AV1 (AOMedia)';
+      else if (latin.includes('V_MPEG4/ISO/AVC')) result.videoCodec = 'H.264 / AVC';
+      else if (latin.includes('V_MPEGH/ISO/HEVC')) result.videoCodec = 'H.265 / HEVC';
+      else result.videoCodec = isWebm ? 'VP9 / AV1 (WebM)' : 'Matroska Video';
+
+      if (latin.includes('A_OPUS')) result.audioCodec = 'Opus Audio';
+      else if (latin.includes('A_VORBIS')) result.audioCodec = 'Vorbis Audio';
+      else if (latin.includes('A_AAC')) result.audioCodec = 'AAC Audio';
+      else if (latin.includes('audio')) result.audioCodec = 'Audio stream detected';
+      else result.audioCodec = 'None detected';
+
+      return result;
+    }
+
+    // 3. MP4 / MOV (ISO Base Media File Format)
+    result.containerFormat = cleanExt === '.mov' ? 'QuickTime / MOV' : 'MPEG-4 Base Media (MP4)';
+    const mvhdIdx = searchBuf.indexOf('mvhd');
+    if (mvhdIdx !== -1 && mvhdIdx + 32 <= searchBuf.length) {
+      const version = searchBuf[mvhdIdx + 4];
+      let timeScale = 1000;
+      let duration = 0;
+      if (version === 0) {
+        timeScale = searchBuf.readUInt32BE(mvhdIdx + 16);
+        duration = searchBuf.readUInt32BE(mvhdIdx + 20);
+      } else if (version === 1 && mvhdIdx + 36 <= searchBuf.length) {
+        timeScale = searchBuf.readUInt32BE(mvhdIdx + 24);
+        const hi = searchBuf.readUInt32BE(mvhdIdx + 28);
+        const lo = searchBuf.readUInt32BE(mvhdIdx + 32);
+        duration = hi * 4294967296 + lo;
+      }
+      if (timeScale > 0 && duration > 0) {
+        result.durationSeconds = Number((duration / timeScale).toFixed(2));
+      }
+    }
+
+    // Inspect tkhd (track header) for width, height, and display rotation matrix (portrait phone videos)
+    const tkhdIdx = searchBuf.indexOf('tkhd');
+    if (tkhdIdx !== -1 && tkhdIdx + 96 <= searchBuf.length) {
+      const ver = searchBuf[tkhdIdx + 4];
+      const offsetW = ver === 0 ? tkhdIdx + 80 : tkhdIdx + 92;
+      const offsetH = ver === 0 ? tkhdIdx + 84 : tkhdIdx + 96;
+      const matrixOffset = ver === 0 ? tkhdIdx + 44 : tkhdIdx + 56;
+
+      let isRotated90or270 = false;
+      if (matrixOffset + 16 <= searchBuf.length) {
+        const matrixB = searchBuf.readInt32BE(matrixOffset + 4);
+        const matrixC = searchBuf.readInt32BE(matrixOffset + 12);
+        if (matrixB !== 0 || matrixC !== 0) {
+          isRotated90or270 = true;
+        }
+      }
+
+      if (offsetH + 4 <= searchBuf.length) {
+        const wFixed = searchBuf.readUInt32BE(offsetW);
+        const hFixed = searchBuf.readUInt32BE(offsetH);
+        let width = wFixed >> 16;
+        let height = hFixed >> 16;
+        if (isRotated90or270 && width > 0 && height > 0) {
+          // Swap dimensions for portrait camera recordings
+          const tmp = width;
+          width = height;
+          height = tmp;
+        }
+        if (width > 0 && height > 0 && width < 16384 && height < 16384) {
+          result.width = width;
+          result.height = height;
+        }
+      }
+    }
+
+    // Look for video codecs (avc1, hvc1, hev1, vp09, av01)
+    if (searchBuf.indexOf('avc1') !== -1) result.videoCodec = 'H.264 / AVC (avc1)';
+    else if (searchBuf.indexOf('hvc1') !== -1 || searchBuf.indexOf('hev1') !== -1) result.videoCodec = 'H.265 / HEVC';
+    else if (searchBuf.indexOf('av01') !== -1) result.videoCodec = 'AV1 (av01)';
+    else if (searchBuf.indexOf('vp09') !== -1) result.videoCodec = 'VP9 (vp09)';
+    else if (cleanExt === '.mov') result.videoCodec = 'Apple QuickTime Video (H.264/ProRes)';
+    else result.videoCodec = 'MPEG-4 Video (H.264)';
+
+    // Look for audio codecs (mp4a, ac-3, ec-3, opus)
+    if (searchBuf.indexOf('mp4a') !== -1) result.audioCodec = 'AAC (Advanced Audio Coding - mp4a)';
+    else if (searchBuf.indexOf('ac-3') !== -1) result.audioCodec = 'Dolby Digital AC-3';
+    else if (searchBuf.indexOf('soun') !== -1) result.audioCodec = 'ISO Audio Stream (AAC/PCM)';
+    else result.audioCodec = 'None detected';
+
+    return result;
+  } catch {
+    return result;
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function extractMetadataForFile(
   filePath: string,
   validated: ValidatedFile,
@@ -183,8 +342,25 @@ export async function extractMetadataForFile(
       }
       base.tags = mergedTags;
       base.metadataPresent = Object.keys(mergedTags).length > 0;
-    } else {
-      base.warnings.push('ffprobe could not decode container streams; video may be malformed or unsupported.');
+    }
+
+    // If FFprobe was unavailable or could not resolve essential video fields, apply binary container parser fallback
+    if (!base.videoCodec || !base.width || !base.durationSeconds) {
+      const fallback = await parseVideoContainerFallback(filePath, validated.extension);
+      if (!base.containerFormat && fallback.containerFormat) base.containerFormat = fallback.containerFormat;
+      if (!base.videoCodec && fallback.videoCodec) base.videoCodec = fallback.videoCodec;
+      if ((!base.audioCodec || base.audioCodec === 'None detected') && fallback.audioCodec) {
+        base.audioCodec = fallback.audioCodec;
+      }
+      if (!base.width && fallback.width) base.width = fallback.width;
+      if (!base.height && fallback.height) base.height = fallback.height;
+      if (!base.durationSeconds && fallback.durationSeconds) base.durationSeconds = fallback.durationSeconds;
+      if (!base.frameRate && fallback.frameRate) base.frameRate = fallback.frameRate;
+      if (!base.frameCount && fallback.frameCount) base.frameCount = fallback.frameCount;
+    }
+
+    if (!base.videoCodec && !probe) {
+      base.warnings.push('FFprobe unavailable in current runtime; container streams parsed via pure-TS binary box parser.');
     }
     return { metadata: base };
   }

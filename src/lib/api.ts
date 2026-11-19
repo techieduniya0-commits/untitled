@@ -218,9 +218,188 @@ export async function apiRequest<T>(
   return promise;
 }
 
+function guessClientMimeType(fileName: string, browserMime?: string): string {
+  if (browserMime && browserMime !== 'application/octet-stream') return browserMime;
+  const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
+  switch (ext) {
+    case 'mp4': return 'video/mp4';
+    case 'mov': return 'video/quicktime';
+    case 'webm': return 'video/webm';
+    case 'mkv': return 'video/x-matroska';
+    case 'avi': return 'video/x-msvideo';
+    case 'jpg':
+    case 'jpeg': return 'image/jpeg';
+    case 'png': return 'image/png';
+    case 'webp': return 'image/webp';
+    case 'wav': return 'audio/wav';
+    case 'mp3': return 'audio/mpeg';
+    case 'm4a': return 'audio/mp4';
+    case 'pdf': return 'application/pdf';
+    case 'docx': return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    case 'txt': return 'text/plain';
+    default: return 'application/octet-stream';
+  }
+}
+
+const CHUNK_SIZE = 3.5 * 1024 * 1024; // 3.5MB to stay comfortably below Vercel's 4.5MB edge payload limit
+
+/**
+ * Uploads large files (such as MP4 videos) in ~3.5MB chunks via POST /api/analyses/upload-chunk.
+ * This completely avoids Vercel's 4.5MB request payload limit without requiring third-party storage.
+ */
+export async function uploadFileInChunks(
+  file: File,
+  options: {
+    onProgress?: (pct: number, loaded: number, total: number) => void;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  } = {},
+): Promise<{ status: number; analysis: AnalysisRecord; mode?: 'sync' | 'async' }> {
+  const uploadId = `up_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+  let bytesUploaded = 0;
+
+  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+    if (options.signal?.aborted) {
+      throw new ApiRequestError({
+        status: 0,
+        code: 'CANCELLED',
+        endpoint: '/api/analyses/upload-chunk',
+        message: 'Upload cancelled.',
+        details: `Aborted at chunk ${chunkIndex + 1} of ${totalChunks}`,
+        retryable: true,
+      });
+    }
+
+    const start = chunkIndex * CHUNK_SIZE;
+    const end = Math.min(file.size, start + CHUNK_SIZE);
+    const chunkBlob = file.slice(start, end);
+    const chunkSize = end - start;
+
+    const formData = new FormData();
+    formData.append('uploadId', uploadId);
+    formData.append('chunkIndex', String(chunkIndex));
+    formData.append('totalChunks', String(totalChunks));
+    formData.append('fileName', file.name);
+    formData.append('declaredMime', guessClientMimeType(file.name, file.type));
+    formData.append('chunk', chunkBlob, `part_${chunkIndex}.tmp`);
+
+    const chunkRes = await new Promise<{ status: number; data: Record<string, unknown> }>(
+      (resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/analyses/upload-chunk');
+        xhr.setRequestHeader('Accept', 'application/json');
+        xhr.timeout = options.timeoutMs ?? 65_000;
+
+        const onAbort = () => xhr.abort();
+        options.signal?.addEventListener('abort', onAbort, { once: true });
+
+        xhr.upload.onprogress = (evt) => {
+          if (evt.lengthComputable) {
+            const currentLoaded = bytesUploaded + evt.loaded;
+            const pct = Math.min(99, Math.round((currentLoaded / file.size) * 100));
+            options.onProgress?.(pct, currentLoaded, file.size);
+          }
+        };
+
+        xhr.onload = () => {
+          options.signal?.removeEventListener('abort', onAbort);
+          const contentType = xhr.getResponseHeader('content-type') || '';
+          const parsed = parseJsonBody(
+            xhr.responseText || '',
+            contentType,
+            xhr.status,
+            '/api/analyses/upload-chunk',
+          );
+          if (!parsed.ok) {
+            reject(parsed.error);
+            return;
+          }
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve({ status: xhr.status, data: parsed.data });
+          } else {
+            reject(
+              new ApiRequestError({
+                status: xhr.status,
+                code: String(parsed.data.code || `HTTP_${xhr.status}`),
+                endpoint: '/api/analyses/upload-chunk',
+                message: String(parsed.data.error || `Chunk upload failed (HTTP ${xhr.status})`),
+                details: `Chunk ${chunkIndex + 1}/${totalChunks}`,
+                retryable: xhr.status >= 500 || xhr.status === 408,
+              }),
+            );
+          }
+        };
+
+        xhr.onerror = () => {
+          options.signal?.removeEventListener('abort', onAbort);
+          reject(
+            new ApiRequestError({
+              status: 0,
+              code: 'NETWORK_ERROR',
+              endpoint: '/api/analyses/upload-chunk',
+              message: `Connection dropped during chunk ${chunkIndex + 1} of ${totalChunks}.`,
+              details: `Network error on file ${file.name}`,
+              retryable: true,
+            }),
+          );
+        };
+
+        xhr.ontimeout = () => {
+          options.signal?.removeEventListener('abort', onAbort);
+          reject(
+            new ApiRequestError({
+              status: 408,
+              code: 'TIMEOUT',
+              endpoint: '/api/analyses/upload-chunk',
+              message: `Upload timed out during chunk ${chunkIndex + 1} of ${totalChunks}.`,
+              details: `Timeout transferring chunk of ${file.name}`,
+              retryable: true,
+            }),
+          );
+        };
+
+        xhr.send(formData);
+      },
+    );
+
+    bytesUploaded += chunkSize;
+    options.onProgress?.(
+      Math.min(100, Math.round((bytesUploaded / file.size) * 100)),
+      bytesUploaded,
+      file.size,
+    );
+
+    // If final chunk, return the assembled analysis
+    if (chunkIndex === totalChunks - 1) {
+      const single = chunkRes.data.analysis as AnalysisRecord | undefined;
+      if (single && single.id) {
+        return {
+          status: chunkRes.status,
+          analysis: single,
+          mode:
+            chunkRes.data.mode === 'sync' || chunkRes.data.mode === 'async'
+              ? chunkRes.data.mode
+              : undefined,
+        };
+      }
+    }
+  }
+
+  throw new ApiRequestError({
+    status: 500,
+    code: 'CHUNK_COMPLETION_ERROR',
+    endpoint: '/api/analyses/upload-chunk',
+    message: 'All chunks were uploaded but no final analysis record was returned by the server.',
+    details: `File: ${file.name}`,
+    retryable: true,
+  });
+}
+
 /**
  * Uploads a single file in its own isolated FormData request so multiple-file batches
  * never reuse a previous file, stay under serverless payload caps, and report accurate per-file progress.
+ * If file size > 4MB (or if server returns 413), automatically streams via chunked upload.
  * Accepts both HTTP 200 (synchronous serverless completion) and HTTP 202 (asynchronous pipeline start).
  */
 export function uploadSingleFileWithProgress(
@@ -231,6 +410,11 @@ export function uploadSingleFileWithProgress(
     timeoutMs?: number;
   } = {},
 ): Promise<{ status: number; analysis: AnalysisRecord; mode?: 'sync' | 'async' }> {
+  // Directly stream files > 4MB in chunks so Vercel's 4.5MB request limit is never exceeded
+  if (file.size > 4 * 1024 * 1024) {
+    return uploadFileInChunks(file, options);
+  }
+
   const endpoint = '/api/analyses/upload';
   return new Promise((resolve, reject) => {
     const formData = new FormData();
@@ -280,6 +464,12 @@ export function uploadSingleFileWithProgress(
       }
 
       const data = parsed.data;
+      if (xhr.status === 413) {
+        // Fall back to chunked upload automatically if server or Vercel edge rejected single request
+        uploadFileInChunks(file, options).then(resolve).catch(reject);
+        return;
+      }
+
       if (xhr.status >= 200 && xhr.status < 300) {
         const list = Array.isArray(data.analyses) ? (data.analyses as AnalysisRecord[]) : [];
         const single = list[0] ?? (data.analysis as AnalysisRecord | undefined);

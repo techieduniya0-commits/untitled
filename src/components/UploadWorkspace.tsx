@@ -24,7 +24,7 @@ import { PremiumButton } from './PremiumUi';
 interface UploadWorkspaceProps {
   maxUploadSizeMb: number;
   onAnalysesStarted: (analyses: AnalysisRecord[]) => void;
-  onRunSample: (sampleType: 'image' | 'document') => void;
+  onRunSample: (sampleType: 'image' | 'document' | 'audio') => void;
   runningSample: boolean;
 }
 
@@ -74,7 +74,9 @@ const SUPPORTED_EXTENSIONS = new Set([
   '.webp',
   '.mp4',
   '.mov',
+  '.mkv',
   '.webm',
+  '.avi',
   '.pdf',
   '.docx',
   '.txt',
@@ -87,7 +89,7 @@ function detectClientMediaType(file: File): MediaType | null {
   const ext = `.${file.name.split('.').pop()?.toLowerCase() ?? ''}`;
   if (!SUPPORTED_EXTENSIONS.has(ext)) return null;
   if (['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) return 'image';
-  if (['.mp4', '.mov', '.webm'].includes(ext)) return 'video';
+  if (['.mp4', '.mov', '.mkv', '.webm', '.avi'].includes(ext)) return 'video';
   if (['.wav', '.mp3', '.m4a'].includes(ext)) return 'audio';
   if (ext === '.pdf') return 'pdf';
   return 'document';
@@ -98,7 +100,7 @@ async function inspectClientHeaderSignature(
   expectedType: MediaType,
 ): Promise<{ ok: boolean; note: string; error?: string }> {
   try {
-    const slice = await file.slice(0, 16).arrayBuffer();
+    const slice = await file.slice(0, 256).arrayBuffer();
     const bytes = new Uint8Array(slice);
     if (bytes.length === 0) {
       return { ok: false, note: 'Empty file', error: `"${file.name}" contains 0 bytes.` };
@@ -130,12 +132,37 @@ async function inspectClientHeaderSignature(
     }
 
     if (expectedType === 'video') {
-      if (ascii.slice(4, 8) === 'ftyp') return { ok: true, note: 'ISO BMFF / MP4 / MOV header verified' };
-      if (startsWith([0x1a, 0x45, 0xdf, 0xa3])) return { ok: true, note: 'WebM / EBML header verified' };
+      // ISO-BMFF (MP4 / MOV): bytes 4-8 being ftyp, moov, mdat, wide, free, skip
+      const boxType = ascii.slice(4, 8);
+      const isIsoBmff =
+        ['ftyp', 'moov', 'mdat', 'wide', 'free', 'skip'].includes(boxType) ||
+        ascii.includes('ftyp') ||
+        ascii.includes('moov');
+
+      if (isIsoBmff) {
+        return { ok: true, note: 'ISO-BMFF / MP4 container verified' };
+      }
+
+      // Matroska / WebM EBML header (0x1A 0x45 0xDF 0xA3)
+      if (startsWith([0x1a, 0x45, 0xdf, 0xa3])) {
+        return { ok: true, note: 'MKV / WebM container verified' };
+      }
+
+      // AVI RIFF container (RIFF....AVI  or AVIX)
+      if (ascii.startsWith('RIFF') && (ascii.slice(8, 12) === 'AVI ' || ascii.slice(8, 12) === 'AVIX')) {
+        return { ok: true, note: 'AVI RIFF container verified' };
+      }
+
+      // Fallback for valid video containers with custom atom layouts: allow transfer and verify with server deep parser
+      const ext = `.${file.name.split('.').pop()?.toLowerCase() ?? ''}`;
+      if (['.mp4', '.mov', '.mkv', '.webm', '.avi'].includes(ext)) {
+        return { ok: true, note: 'Video container (server integrity check pending)' };
+      }
+
       return {
         ok: false,
         note: 'Header mismatch',
-        error: `"${file.name}" does not have a recognized MP4, MOV, or WebM container signature.`,
+        error: `"${file.name}" does not have a recognized MP4, MOV, MKV, WebM, or AVI container signature.`,
       };
     }
 
@@ -196,9 +223,10 @@ function plannedMethodsForType(type: MediaType): string[] {
       ];
     case 'audio':
       return [
-        '16 kHz PCM waveform & DFT spectral centroid',
-        'Dynamic range, silence ratio & clipping analysis',
-        'Multimodal speech, prosody & vocoder artifact review',
+        'Specialized Wav2Vec2 neural voice-cloning & anti-spoofing detector',
+        '16 kHz multi-segment acoustic vocoder & harmonic feature profiling',
+        'Vocal micro-jitter, pitch periodicity & silence gating analysis',
+        'DFT spectral centroid, dynamic range & clipping rate',
         'Audio container & encoder metadata inspection',
       ];
     case 'pdf':
@@ -291,6 +319,8 @@ export function UploadWorkspace({
   const [completedInBatch, setCompletedInBatch] = useState<AnalysisRecord[]>([]);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const replaceInputRef = useRef<HTMLInputElement | null>(null);
+  const [replacingItemId, setReplacingItemId] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const submittingRef = useRef(false);
   const previewUrlsRef = useRef<Set<string>>(new Set());
@@ -411,6 +441,9 @@ export function UploadWorkspace({
 
   const removeFile = (id: string) => {
     if (submittingRef.current) return;
+    if (inputRef.current) {
+      inputRef.current.value = '';
+    }
     setQueue((prev) => {
       const target = prev.find((f) => f.id === id);
       if (target?.previewUrl) {
@@ -425,6 +458,83 @@ export function UploadWorkspace({
       }
       return next;
     });
+  };
+
+  const handleStartReplace = (id: string) => {
+    if (submittingRef.current) return;
+    setReplacingItemId(id);
+    if (replaceInputRef.current) {
+      replaceInputRef.current.value = '';
+      replaceInputRef.current.click();
+    }
+  };
+
+  const replaceFile = async (targetId: string, newFile: File) => {
+    if (submittingRef.current) return;
+    setUploadError(null);
+    setShowErrorDetails(false);
+
+    const maxBytes = maxUploadSizeMb * 1024 * 1024;
+    const type = detectClientMediaType(newFile);
+    if (!type) {
+      setUploadError({
+        category: 'Unsupported format',
+        message: `"${newFile.name}" is not a supported format. Allowed: JPG, PNG, WEBP, MP4, MOV, MKV, WEBM, AVI, PDF, DOCX, TXT, WAV, MP3, M4A.`,
+        retryable: false,
+      });
+      return;
+    }
+    if (newFile.size === 0) {
+      setUploadError({
+        category: 'Corrupted or invalid file',
+        message: `"${newFile.name}" is empty (0 bytes) and cannot be analysed.`,
+        retryable: false,
+      });
+      return;
+    }
+    if (newFile.size > maxBytes) {
+      setUploadError({
+        category: 'Exceeds size limit',
+        message: `"${newFile.name}" (${formatBytes(newFile.size)}) exceeds the ${maxUploadSizeMb} MB upload limit.`,
+        retryable: false,
+      });
+      return;
+    }
+
+    const sig = await inspectClientHeaderSignature(newFile, type);
+    if (!sig.ok) {
+      setUploadError({
+        category: 'Corrupted or invalid file',
+        message: sig.error || `"${newFile.name}" failed binary signature verification.`,
+        retryable: false,
+      });
+      return;
+    }
+
+    const previewUrl = type === 'image' ? URL.createObjectURL(newFile) : undefined;
+    if (previewUrl) previewUrlsRef.current.add(previewUrl);
+
+    setQueue((prev) =>
+      prev.map((item) => {
+        if (item.id === targetId) {
+          if (item.previewUrl) {
+            URL.revokeObjectURL(item.previewUrl);
+            previewUrlsRef.current.delete(item.previewUrl);
+          }
+          return {
+            id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            file: newFile,
+            mediaType: type,
+            previewUrl,
+            magicSignatureNote: sig.note,
+            status: 'queued',
+            progress: 0,
+            loadedBytes: 0,
+          };
+        }
+        return item;
+      }),
+    );
   };
 
   const handleCancelUpload = () => {
@@ -634,12 +744,27 @@ export function UploadWorkspace({
           ref={inputRef}
           type="file"
           multiple
-          accept=".jpg,.jpeg,.png,.webp,.mp4,.mov,.webm,.pdf,.docx,.txt,.wav,.mp3,.m4a"
+          accept=".jpg,.jpeg,.png,.webp,.mp4,.mov,.mkv,.webm,.avi,.pdf,.docx,.txt,.wav,.mp3,.m4a"
           onChange={(e) => {
             if (e.target.files?.length) {
               const selected = Array.from(e.target.files);
               e.target.value = '';
               void addFiles(selected);
+            }
+          }}
+          className="hidden"
+        />
+
+        <input
+          ref={replaceInputRef}
+          type="file"
+          accept=".jpg,.jpeg,.png,.webp,.mp4,.mov,.mkv,.webm,.avi,.pdf,.docx,.txt,.wav,.mp3,.m4a"
+          onChange={(e) => {
+            if (e.target.files?.length && replacingItemId) {
+              const file = e.target.files[0];
+              e.target.value = '';
+              void replaceFile(replacingItemId, file);
+              setReplacingItemId(null);
             }
           }}
           className="hidden"
@@ -653,7 +778,7 @@ export function UploadWorkspace({
           Drag and drop media files here, or browse from your device
         </p>
         <p className="mt-1.5 text-xs text-[#52607A]">
-          Images (JPG, JPEG, PNG, WEBP) · Videos (MP4, MOV, WEBM) · Documents (PDF, DOCX, TXT) ·
+          Images (JPG, JPEG, PNG, WEBP) · Videos (MP4, MOV, MKV, WEBM, AVI) · Documents (PDF, DOCX, TXT) ·
           Audio (WAV, MP3, M4A)
         </p>
         <p className="mt-1 text-xs font-mono tabular-nums text-[#64748B]">
@@ -666,7 +791,10 @@ export function UploadWorkspace({
             variant="primary"
             size="md"
             disabled={isUploading}
-            onClick={() => inputRef.current?.click()}
+            onClick={() => {
+              if (inputRef.current) inputRef.current.value = '';
+              inputRef.current?.click();
+            }}
           >
             Browse files
           </PremiumButton>
@@ -914,7 +1042,16 @@ export function UploadWorkspace({
                   </div>
                 </div>
 
-                <div className="shrink-0">
+                <div className="shrink-0 flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={isUploading || item.status === 'uploaded'}
+                    onClick={() => handleStartReplace(item.id)}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-[#2563EB] hover:text-[#1D4ED8] hover:bg-[#EFF6FF] rounded-lg transition-colors cursor-pointer disabled:opacity-40"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Replace
+                  </button>
                   <button
                     type="button"
                     disabled={isUploading || item.status === 'uploaded'}
@@ -945,7 +1082,7 @@ export function UploadWorkspace({
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <button
             type="button"
             disabled={runningSample || isUploading}
@@ -956,15 +1093,33 @@ export function UploadWorkspace({
               <div className="flex items-center gap-2.5">
                 <ImageIcon className="w-4 h-4 text-[#5B21B6]" />
                 <span className="text-sm font-semibold text-[#0F172A]">
-                  Research Pavilion Specimen (JPEG)
+                  Research Pavilion (JPEG)
                 </span>
               </div>
               <ArrowRight className="w-4 h-4 text-[#64748B] transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-[#5B21B6]" />
             </div>
             <p className="mt-1.5 text-xs text-[#52607A] leading-relaxed">
-              Executes the full Image Forensics Pipeline including sharp ELA + Q90/Q75 double-JPEG
-              delta, noise residuals, edge-strip watermark OCR, EXIF/C2PA inspection, and multimodal
-              visual reasoning.
+              Image Forensics Pipeline: sharp ELA + double-JPEG delta, Laplacian noise, and EXIF/C2PA scan.
+            </p>
+          </button>
+
+          <button
+            type="button"
+            disabled={runningSample || isUploading}
+            onClick={() => onRunSample('audio')}
+            className="group text-left p-4 rounded-xl border border-[#DCE8F8] bg-white/80 hover:bg-white hover:border-[#10B981]/70 hover:-translate-y-0.5 hover:shadow-[0_12px_28px_-12px_rgba(16,185,129,0.18)] transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] cursor-pointer disabled:opacity-50"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <AudioWaveform className="w-4 h-4 text-[#059669]" />
+                <span className="text-sm font-semibold text-[#0F172A]">
+                  Synthetic Voice Clone (WAV)
+                </span>
+              </div>
+              <ArrowRight className="w-4 h-4 text-[#64748B] transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-[#059669]" />
+            </div>
+            <p className="mt-1.5 text-xs text-[#52607A] leading-relaxed">
+              Audio Anti-Spoofing Pipeline: Wav2Vec2 voice classifier, multi-segment vocoder harmonics, vocal micro-jitter, and digital gating review.
             </p>
           </button>
 
@@ -978,14 +1133,13 @@ export function UploadWorkspace({
               <div className="flex items-center gap-2.5">
                 <FileText className="w-4 h-4 text-[#2563EB]" />
                 <span className="text-sm font-semibold text-[#0F172A]">
-                  Municipal Water Briefing (TXT)
+                  Municipal Briefing (TXT)
                 </span>
               </div>
               <ArrowRight className="w-4 h-4 text-[#64748B] transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-[#5B21B6]" />
             </div>
             <p className="mt-1.5 text-xs text-[#52607A] leading-relaxed">
-              Mixed formal and field-note document testing quantitative stylometry, burstiness CV,
-              4-gram repetition, passage highlighting, and AI-text limitation disclaimers.
+              Document stylometry: sentence burstiness, lexical diversity, 4-gram repetition, and linguistic assessment.
             </p>
           </button>
         </div>

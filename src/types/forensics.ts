@@ -233,6 +233,8 @@ export interface AudioSegmentFinding {
   zeroCrossingRate: number;
   observation: string;
   flagged: boolean;
+  anomalyScore?: number;
+  modelPrediction?: string;
 }
 
 export interface AudioProfile {
@@ -250,6 +252,13 @@ export interface AudioProfile {
   uncertainSignals?: string[];
   naturalCues?: string[];
   segments: AudioSegmentFinding[];
+  modelUsed?: string;
+  modelRawScore?: number | null;
+  assessmentCategory?:
+    | 'Likely synthetic or spoofed speech'
+    | 'Likely genuine human speech'
+    | 'Inconclusive / insufficient evidence'
+    | 'Analysis unavailable because of a technical failure';
 }
 
 export interface MethodContribution {

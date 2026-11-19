@@ -921,15 +921,23 @@ export function ForensicReportView({
       )}
 
       {/* MEDIA-SPECIFIC VISUAL / TIMELINE / DOCUMENT / AUDIO INSPECTION PANEL */}
-      {analysis.mediaType === 'image' && analysis.imageVisualMetrics && (
+      {(analysis.mediaType === 'image' || (analysis.mediaType === 'video' && analysis.imageVisualMetrics)) && analysis.imageVisualMetrics && (
         <div className="tl-glass-panel rounded-2xl p-6">
           <h2 className="text-base font-semibold text-[#172554] mb-4">
-            Visual &amp; Pixel-Level Inspection Panel
+            {analysis.mediaType === 'video'
+              ? 'Keyframe Visual & Pixel-Level Forensics (Frame 0)'
+              : 'Visual & Pixel-Level Inspection Panel'}
           </h2>
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <div className="lg:col-span-5">
               <div className="rounded-lg border border-[#E5EAF2] bg-[#F5F7FB] overflow-hidden aspect-[4/3] flex items-center justify-center">
-                {analysis.mediaRetained && analysis.previewUrl ? (
+                {analysis.mediaType === 'video' && analysis.videoFrames?.[0]?.thumbnailUrl ? (
+                  <img
+                    src={analysis.videoFrames[0].thumbnailUrl}
+                    alt="Keyframe sample"
+                    className="w-full h-full object-contain"
+                  />
+                ) : analysis.mediaRetained && analysis.previewUrl ? (
                   <img
                     src={analysis.previewUrl}
                     alt={analysis.fileName}
@@ -1235,22 +1243,79 @@ export function ForensicReportView({
           </div>
         )}
 
-      {analysis.mediaType === 'audio' && analysis.audioProfile && (
+      {/* Extracted Audio Forensics Panel (for standalone audio OR video with extracted audio) */}
+      {(analysis.mediaType === 'audio' || (analysis.mediaType === 'video' && analysis.audioProfile)) && analysis.audioProfile && (
         <div className="tl-glass-panel rounded-2xl p-6 space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-semibold text-[#172554]">
-                Acoustic Waveform &amp; Timestamped Observations
+                {analysis.mediaType === 'video'
+                  ? 'Extracted Video Audio Track — Acoustic & Speech Analysis'
+                  : 'Acoustic Waveform & Timestamped Observations'}
               </h2>
               <p className="mt-0.5 text-xs text-[#64748B]">
-                Decoded via FFmpeg 16 kHz mono PCM for deterministic loudness, silence, and DFT
-                spectral measurements
+                {analysis.mediaType === 'video'
+                  ? 'Extracted via FFmpeg to 16 kHz mono PCM for loudness, spectral centroid, silence, and speech artifact screening'
+                  : 'Decoded via FFmpeg 16 kHz mono PCM for deterministic loudness, silence, and DFT spectral measurements'}
               </p>
             </div>
-            {analysis.mediaRetained && analysis.previewUrl && (
-              <audio ref={audioPlayerRef} src={analysis.previewUrl} controls className="h-9" />
+            {analysis.mediaRetained && (
+              <audio
+                ref={audioPlayerRef}
+                src={analysis.mediaType === 'video' ? `/api/analyses/${analysis.id}/audio` : analysis.previewUrl}
+                controls
+                className="h-9"
+              />
             )}
           </div>
+
+          {analysis.audioProfile.assessmentCategory && (
+            <div
+              className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                analysis.audioProfile.assessmentCategory === 'Likely synthetic or spoofed speech'
+                  ? 'bg-[#FEF2F2] border-[#FECACA]'
+                  : analysis.audioProfile.assessmentCategory === 'Likely genuine human speech'
+                    ? 'bg-[#F0FDF4] border-[#BBF7D0]'
+                    : 'bg-[#FFFBEB] border-[#FDE68A]'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <span
+                  className={`w-3 h-3 rounded-full shrink-0 ${
+                    analysis.audioProfile.assessmentCategory === 'Likely synthetic or spoofed speech'
+                      ? 'bg-[#DC2626] animate-pulse'
+                      : analysis.audioProfile.assessmentCategory === 'Likely genuine human speech'
+                        ? 'bg-[#16A34A]'
+                        : 'bg-[#D97706]'
+                  }`}
+                />
+                <div>
+                  <p className="text-xs font-semibold text-[#0F172A]">
+                    Anti-Spoofing Verdict: {analysis.audioProfile.assessmentCategory}
+                  </p>
+                  <p className="text-[11px] text-[#64748B]">
+                    Primary Model Score: {analysis.audioProfile.modelRawScore ?? 'N/A'}/100 · Model:{' '}
+                    {analysis.audioProfile.modelUsed || 'Wav2Vec2 Voice Anti-Spoofing'}
+                  </p>
+                </div>
+              </div>
+              <span
+                className={`text-[11px] font-mono font-semibold px-2.5 py-1 rounded-full uppercase tracking-wider ${
+                  analysis.audioProfile.assessmentCategory === 'Likely synthetic or spoofed speech'
+                    ? 'bg-[#FEE2E2] text-[#991B1B]'
+                    : analysis.audioProfile.assessmentCategory === 'Likely genuine human speech'
+                      ? 'bg-[#DCFCE7] text-[#166534]'
+                      : 'bg-[#FEF3C7] text-[#92400E]'
+                }`}
+              >
+                {analysis.audioProfile.assessmentCategory.includes('synthetic')
+                  ? 'AI Synthetic'
+                  : analysis.audioProfile.assessmentCategory.includes('genuine')
+                    ? 'Human Voice'
+                    : 'Inconclusive'}
+              </span>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
             {[
@@ -1377,7 +1442,9 @@ export function ForensicReportView({
           {analysis.audioProfile.segments.length > 0 && (
             <div className="divide-y divide-[#E5EAF2] border border-[#E5EAF2] rounded-lg">
               {analysis.audioProfile.segments.map((seg, i) => {
-                const isClickable = Boolean(analysis.mediaRetained && analysis.previewUrl);
+                const isClickable = Boolean(
+                  analysis.mediaRetained && (analysis.previewUrl || analysis.mediaType === 'video'),
+                );
                 const isActive = activeAudioSec === seg.startSec;
                 return (
                   <button
@@ -1396,16 +1463,42 @@ export function ForensicReportView({
                       </span>
                       <span className="text-[#64748B]">{seg.observation}</span>
                     </div>
-                    {seg.rmsDb !== 0 && (
-                      <span className="font-mono tabular-nums text-[#64748B] whitespace-nowrap">
-                        RMS {seg.rmsDb} dB · ZCR {seg.zeroCrossingRate}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-2 shrink-0">
+                      {seg.anomalyScore !== undefined && (
+                        <span
+                          className={`font-mono text-[11px] px-2 py-0.5 rounded ${
+                            seg.anomalyScore >= 68
+                              ? 'bg-[#FEE2E2] text-[#991B1B] font-semibold'
+                              : seg.anomalyScore <= 35
+                                ? 'bg-[#DCFCE7] text-[#166534]'
+                                : 'bg-[#F1F5F9] text-[#64748B]'
+                          }`}
+                        >
+                          Risk {seg.anomalyScore}/100
+                        </span>
+                      )}
+                      {seg.rmsDb !== 0 && (
+                        <span className="font-mono tabular-nums text-[#64748B] whitespace-nowrap">
+                          RMS {seg.rmsDb} dB · ZCR {seg.zeroCrossingRate}
+                        </span>
+                      )}
+                    </div>
                   </button>
                 );
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {analysis.mediaType === 'video' && !analysis.audioProfile && (
+        <div className="tl-glass-panel rounded-2xl p-4 flex items-center justify-between border border-[#E2E8F0]">
+          <div className="flex items-center gap-2.5">
+            <span className="w-2 h-2 rounded-full bg-[#94A3B8]" />
+            <span className="text-xs font-medium text-[#475569]">
+              Audio Track Status: No audio stream detected in container (silent video footage). Acoustic pipeline skipped.
+            </span>
+          </div>
         </div>
       )}
 

@@ -357,7 +357,7 @@ export default function App() {
     }
   };
 
-  const handleRunSample = async (sampleType: 'image' | 'document') => {
+  const handleRunSample = async (sampleType: 'image' | 'document' | 'audio') => {
     if (runningSample) return;
     setAppError(null);
     setShowErrorDetails(false);

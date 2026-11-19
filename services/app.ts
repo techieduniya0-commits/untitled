@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -334,6 +335,90 @@ export function createApiApp(): Express {
     });
   });
 
+  // Direct chunked upload for videos & large files exceeding serverless 4.5MB payload limit
+  app.post('/api/analyses/upload-chunk', upload.single('chunk'), async (req, res) => {
+    const uploadId = String(req.body.uploadId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    const chunkIndex = parseInt(String(req.body.chunkIndex), 10);
+    const totalChunks = parseInt(String(req.body.totalChunks), 10);
+    const fileName = String(req.body.fileName || 'uploaded_video.mp4');
+    const declaredMime = String(req.body.declaredMime || 'video/mp4');
+
+    if (!uploadId || Number.isNaN(chunkIndex) || Number.isNaN(totalChunks) || !req.file) {
+      res.status(400).json({
+        ok: false,
+        error: 'Invalid chunk payload or missing parameters.',
+        code: 'INVALID_CHUNK',
+      });
+      return;
+    }
+
+    const chunkDir = path.join(TEMP_UPLOAD_DIR, `chunks_${uploadId}`);
+    await fs.mkdir(chunkDir, { recursive: true });
+    const targetChunkPath = path.join(chunkDir, `part_${String(chunkIndex).padStart(4, '0')}.tmp`);
+    await fs.rename(req.file.path, targetChunkPath);
+
+    if (chunkIndex < totalChunks - 1) {
+      res.status(200).json({
+        ok: true,
+        status: 'chunk_received',
+        uploadId,
+        chunkIndex,
+        totalChunks,
+      });
+      return;
+    }
+
+    // Final chunk received: reassemble all chunks in numerical order
+    try {
+      const assembledTempPath = path.join(
+        TEMP_UPLOAD_DIR,
+        `upload_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`,
+      );
+      const writeStream = fsSync.createWriteStream(assembledTempPath);
+
+      for (let i = 0; i < totalChunks; i++) {
+        const partPath = path.join(chunkDir, `part_${String(i).padStart(4, '0')}.tmp`);
+        await new Promise<void>((resolve, reject) => {
+          const readStream = fsSync.createReadStream(partPath);
+          readStream.on('error', reject);
+          readStream.pipe(writeStream, { end: false });
+          readStream.on('end', resolve);
+        });
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        writeStream.on('finish', resolve);
+        writeStream.on('error', reject);
+        writeStream.end();
+      });
+
+      // Clean up chunk files in background
+      void fs.rm(chunkDir, { recursive: true, force: true }).catch(() => undefined);
+
+      const { analysis, storedFilePath } = await createQueuedAnalysis({
+        tempFilePath: assembledTempPath,
+        originalName: fileName,
+        declaredMime,
+      });
+
+      if (IS_SERVERLESS) {
+        await executeForensicPipeline(analysis, storedFilePath);
+        const finished = (await getAnalysisById(analysis.id)) ?? analysis;
+        res.status(200).json({ ok: true, mode: 'sync', analysis: finished });
+      } else {
+        void executeForensicPipeline(analysis, storedFilePath);
+        res.status(202).json({ ok: true, mode: 'async', analysis });
+      }
+    } catch (assemblyErr) {
+      void fs.rm(chunkDir, { recursive: true, force: true }).catch(() => undefined);
+      res.status(500).json({
+        ok: false,
+        error: assemblyErr instanceof Error ? assemblyErr.message : 'Failed to reassemble video chunks.',
+        code: 'CHUNK_ASSEMBLY_ERROR',
+      });
+    }
+  });
+
   // Built-in sample specimen trigger so reviewers can verify the complete real backend pipeline in one click
   app.post('/api/analyses/sample', async (req, res) => {
     const sampleType = String(req.body?.sampleType ?? 'image');
@@ -357,6 +442,41 @@ export function createApiApp(): Express {
         await fs.writeFile(tempPath, sampleDoc, 'utf-8');
         originalName = 'municipal_water_briefing_specimen.txt';
         declaredMime = 'text/plain';
+      } else if (sampleType === 'audio') {
+        tempPath = path.join(TEMP_UPLOAD_DIR, `sample_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.wav`);
+        const sampleRate = 16000;
+        const totalSamples = sampleRate * 3;
+        const pcmBuffer = Buffer.alloc(totalSamples * 2);
+        for (let i = 0; i < totalSamples; i++) {
+          const t = i / sampleRate;
+          let v = 0;
+          if (t > 0.3 && t < 2.7) {
+            v =
+              0.38 * Math.sin(2 * Math.PI * 140 * t) +
+              0.24 * Math.sin(2 * Math.PI * 280 * t) +
+              0.14 * Math.sin(2 * Math.PI * 560 * t) +
+              0.08 * Math.sin(2 * Math.PI * 1120 * t);
+          }
+          const s16 = Math.max(-32768, Math.min(32767, Math.round(v * 32767)));
+          pcmBuffer.writeInt16LE(s16, i * 2);
+        }
+        const header = Buffer.alloc(44);
+        header.write('RIFF', 0);
+        header.writeUInt32LE(36 + pcmBuffer.length, 4);
+        header.write('WAVE', 8);
+        header.write('fmt ', 12);
+        header.writeUInt32LE(16, 16);
+        header.writeUInt16LE(1, 20);
+        header.writeUInt16LE(1, 22);
+        header.writeUInt32LE(sampleRate, 24);
+        header.writeUInt32LE(sampleRate * 2, 28);
+        header.writeUInt16LE(2, 32);
+        header.writeUInt16LE(16, 34);
+        header.write('data', 36);
+        header.writeUInt32LE(pcmBuffer.length, 40);
+        await fs.writeFile(tempPath, Buffer.concat([header, pcmBuffer]));
+        originalName = 'synthetic_voice_clone_specimen.wav';
+        declaredMime = 'audio/wav';
       } else {
         const specimenSrc = path.resolve(
           process.cwd(),
@@ -535,6 +655,24 @@ export function createApiApp(): Express {
       res.sendFile(fullPath);
     } catch {
       res.status(404).json({ error: 'Media file unavailable.' });
+    }
+  });
+
+  // Serve extracted video audio track (PCM/WAV)
+  app.get('/api/analyses/:id/audio', async (req, res) => {
+    const record = await getAnalysisById(req.params.id);
+    if (!record || !record.mediaRetained) {
+      res.status(404).json({ error: 'Media record not found or audio purged.' });
+      return;
+    }
+    const audioPath = path.join(UPLOADS_DIR, path.basename(req.params.id), 'extracted_audio.wav');
+    try {
+      await fs.access(audioPath);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Type', 'audio/wav');
+      res.sendFile(audioPath);
+    } catch {
+      res.status(404).json({ error: 'Extracted audio track unavailable or video is silent.' });
     }
   });
 

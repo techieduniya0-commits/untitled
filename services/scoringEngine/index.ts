@@ -318,18 +318,29 @@ export function aggregateForensicEvidence(detectors: DetectorResult[]): ScoringB
   }
 
   const isAudioPipeline = detectors.some(
-    (d) => d.id === 'ai_speech_classification' || d.id === 'audio_spectral_analysis',
+    (d) =>
+      d.id === 'ai_speech_classification' ||
+      d.id === 'audio_spectral_analysis' ||
+      d.id === 'voice_cloning_biometric',
   );
   const audioAiGroups = isAudioPipeline ? groupScores.filter((g) => g.polarity === 'ai_indicator') : [];
   const audioEncoderAiMatch = isAudioPipeline && completed.some(
     (d) => d.id === 'audio_metadata_inspection' && (d.rawSignalScore ?? 0) >= 72,
   );
+  const trainedVoiceCloningMatch = isAudioPipeline && completed.some(
+    (d) => d.id === 'voice_cloning_biometric' && (d.rawSignalScore ?? 0) >= 66,
+  );
   let audioSingleIndicatorCapped = false;
   let audioMultiIndicatorBoost = 0;
 
   if (isAudioPipeline && !visibleAiWatermark && !c2paAiClaim) {
-    if (audioAiGroups.length === 1 && aiIndicatorDetectors.length === 1 && !audioEncoderAiMatch) {
-      // Never automatically label audio as AI-generated based on a single isolated indicator
+    if (
+      audioAiGroups.length === 1 &&
+      aiIndicatorDetectors.length === 1 &&
+      !audioEncoderAiMatch &&
+      !trainedVoiceCloningMatch
+    ) {
+      // Never automatically label audio as AI-generated based on a single isolated uncalibrated heuristic
       if (aiLikelihoodScore > 58) {
         aiLikelihoodScore = 58;
         audioSingleIndicatorCapped = true;

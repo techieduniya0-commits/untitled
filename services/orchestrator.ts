@@ -67,9 +67,9 @@ function getPlannedMethodsLabel(mediaType: MediaType): string {
     case 'image':
       return 'Selected 12-method Image Forensics Pipeline (pixel entropy, Laplacian noise residual, ELA, frequency energy, visible watermark & OCR, lighting/texture/compositing, EXIF, C2PA; SynthID reported unavailable).';
     case 'video':
-      return 'Selected 15-method Video Forensics Pipeline (FFmpeg multi-frame sampling, inter-frame pixel deltas, Bhattacharyya histogram similarity, GOP I/P/B, scene transitions, cross-frame visible watermark tracking, OCR, facial/temporal/lighting review, FFprobe streams, C2PA).';
+      return 'Selected Unified Multimedia Video Forensics Pipeline (FFmpeg multi-frame sampling, keyframe Laplacian noise & ELA pixel forensics, extracted PCM audio track profiling & speech analysis, Bhattacharyya histogram similarity, GOP I/P/B, scene transitions, cross-frame visible watermark tracking, OCR, facial/temporal/lighting review, FFprobe streams, C2PA).';
     case 'audio':
-      return 'Selected 7-method Audio Forensics Pipeline (16 kHz PCM waveform & DFT spectral centroid, dynamic range, silence ratio, acoustic artifacts, prosody, voice continuity, container metadata).';
+      return 'Selected 8-method Audio Anti-Spoofing Pipeline (Wav2Vec2 neural voice-cloning classifier, 16 kHz multi-segment acoustic vocoder profiling, DFT spectral centroid, vocal jitter, dynamic range, silence gating, prosody cadence, container metadata).';
     case 'pdf':
       return 'Selected 9-method PDF Forensics Pipeline (PDF text layer extraction, pdf-lib metadata & font/XObject inspection, stylometry, burstiness, n-gram repetition, linguistic assessment).';
     case 'document':
@@ -123,7 +123,7 @@ export async function createQueuedAnalysis(options: {
   const expires = new Date(now.getTime() + settings.retainOriginalMediaHours * 3600 * 1000);
 
   // Quick preliminary guess before full magic-byte validation stage runs
-  const extGuess: MediaType = ['.mp4', '.mov', '.webm'].includes(safeExt)
+  const extGuess: MediaType = ['.mp4', '.mov', '.mkv', '.webm', '.avi'].includes(safeExt)
     ? 'video'
     : ['.wav', '.mp3', '.m4a'].includes(safeExt)
       ? 'audio'
@@ -375,6 +375,8 @@ async function runPipelineInternal(
       analysis.videoFrames = res.videoFrames;
       analysis.videoSamplingStrategy = res.videoSamplingStrategy;
       analysis.videoTelemetry = res.videoTelemetry;
+      analysis.imageVisualMetrics = res.imageVisualMetrics;
+      analysis.audioProfile = res.audioProfile;
       analysis.geminiStatus = res.geminiStatus;
       analysis.geminiModelUsed = res.geminiModelUsed;
       analysis.geminiFailureDetail = res.geminiFailureDetail;
