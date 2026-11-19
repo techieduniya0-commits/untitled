@@ -477,7 +477,7 @@ export function ForensicReportView({
 
       {/* Original File Inline Drawer (avoids window.open in iframe) */}
       {mediaPreviewOpen && analysis.mediaRetained && analysis.previewUrl && (
-        <div className="bg-white border border-[#E5EAF2] rounded-xl p-5">
+        <div className="tl-glass-panel rounded-2xl p-5">
           <div className="flex items-center justify-between mb-3">
             <p className="text-xs font-semibold text-[#172554]">
               Retained Original File Preview (Read-only, non-executable)
@@ -518,7 +518,7 @@ export function ForensicReportView({
 
       {/* Primary Score & Classification Summary Card */}
       {scoring && (
-        <div className="bg-white border border-[#E5EAF2] rounded-xl p-6">
+        <div className="tl-glass-panel rounded-2xl p-6">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
             <div className="lg:col-span-5">
               <p className="text-xs font-medium text-[#64748B]">{scoring.calibrationLabel}</p>
@@ -633,7 +633,7 @@ export function ForensicReportView({
 
       {/* Separated Evidence Breakdown: AI-Supporting vs Natural Capture vs Neutral */}
       {scoring && (
-        <div className="bg-white border border-[#E5EAF2] rounded-xl overflow-hidden">
+        <div className="tl-glass-panel rounded-2xl overflow-hidden">
           <div className="px-6 py-4 border-b border-[#E5EAF2]">
             <h2 className="text-base font-semibold text-[#172554]">
               Evidentiary Breakdown by Direction
@@ -707,7 +707,7 @@ export function ForensicReportView({
 
       {/* MEDIA-SPECIFIC VISUAL / TIMELINE / DOCUMENT / AUDIO INSPECTION PANEL */}
       {analysis.mediaType === 'image' && analysis.imageVisualMetrics && (
-        <div className="bg-white border border-[#E5EAF2] rounded-xl p-6">
+        <div className="tl-glass-panel rounded-2xl p-6">
           <h2 className="text-base font-semibold text-[#172554] mb-4">
             Visual &amp; Pixel-Level Inspection Panel
           </h2>
@@ -795,7 +795,7 @@ export function ForensicReportView({
       )}
 
       {analysis.mediaType === 'video' && analysis.videoFrames && (
-        <div className="bg-white border border-[#E5EAF2] rounded-xl p-6 space-y-5">
+        <div className="tl-glass-panel rounded-2xl p-6 space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2">
             <div>
               <h2 className="text-base font-semibold text-[#172554]">
@@ -948,7 +948,7 @@ export function ForensicReportView({
 
       {(analysis.mediaType === 'pdf' || analysis.mediaType === 'document') &&
         analysis.documentStats && (
-          <div className="bg-white border border-[#E5EAF2] rounded-xl p-6 space-y-5">
+          <div className="tl-glass-panel rounded-2xl p-6 space-y-5">
             <div>
               <h2 className="text-base font-semibold text-[#172554]">
                 Document Stylometry &amp; Highlighted Text Segments
@@ -1021,7 +1021,7 @@ export function ForensicReportView({
         )}
 
       {analysis.mediaType === 'audio' && analysis.audioProfile && (
-        <div className="bg-white border border-[#E5EAF2] rounded-xl p-6 space-y-5">
+        <div className="tl-glass-panel rounded-2xl p-6 space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-semibold text-[#172554]">
@@ -1115,7 +1115,7 @@ export function ForensicReportView({
       {/* Clear Separation: Observed Technical Evidence vs AI-Generated Explanation */}
       {analysis.geminiSummary && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-          <div className="lg:col-span-6 bg-white border border-[#E5EAF2] rounded-xl p-6">
+          <div className="lg:col-span-6 tl-glass-panel rounded-2xl p-6">
             <p className="text-xs font-medium text-[#2563EB]">Deterministic &amp; Detector Outputs</p>
             <h2 className="mt-1 text-base font-semibold text-[#172554]">
               Observed Technical Evidence
@@ -1129,7 +1129,7 @@ export function ForensicReportView({
             </ul>
           </div>
 
-          <div className="lg:col-span-6 bg-white border border-[#E5EAF2] rounded-xl p-6 space-y-4">
+          <div className="lg:col-span-6 tl-glass-panel rounded-2xl p-6 space-y-4">
             <div>
               <p className="text-xs font-medium text-[#64748B]">
                 AI-Generated Interpretation ({analysis.geminiSummary.modelUsed})
@@ -1175,7 +1175,7 @@ export function ForensicReportView({
       )}
 
       {/* HIGH PRIORITY: Watermark & Provenance Findings */}
-      <div className="bg-white border border-[#E5EAF2] rounded-xl overflow-hidden">
+      <div className="tl-glass-panel rounded-2xl overflow-hidden">
         <div className="px-6 py-4 border-b border-[#E5EAF2] flex items-center gap-2.5">
           <ScanEye className="w-4 h-4 text-[#2563EB]" />
           <div>
@@ -1261,7 +1261,7 @@ export function ForensicReportView({
       </div>
 
       {/* Detector-by-Detector Results (Performed vs Failed vs Unavailable) */}
-      <div className="bg-white border border-[#E5EAF2] rounded-xl overflow-hidden">
+      <div className="tl-glass-panel rounded-2xl overflow-hidden">
         <div className="px-6 py-4 border-b border-[#E5EAF2]">
           <h2 className="text-base font-semibold text-[#172554]">
             Detector-by-Detector Results ({performedDetectors.length} completed
@@ -1297,7 +1297,7 @@ export function ForensicReportView({
 
       {/* Scoring Engine Transparency */}
       {scoring && (
-        <div className="bg-white border border-[#E5EAF2] rounded-xl p-6 space-y-4">
+        <div className="tl-glass-panel rounded-2xl p-6 space-y-4">
           <h2 className="text-base font-semibold text-[#172554]">
             How This Score Was Produced
           </h2>
@@ -1339,7 +1339,7 @@ export function ForensicReportView({
       )}
 
       {/* Extracted Metadata Table */}
-      <div className="bg-white border border-[#E5EAF2] rounded-xl overflow-hidden">
+      <div className="tl-glass-panel rounded-2xl overflow-hidden">
         <div className="px-6 py-4 border-b border-[#E5EAF2]">
           <h2 className="text-base font-semibold text-[#172554]">Extracted File Metadata</h2>
           <p className="text-xs text-[#64748B] mt-0.5">
@@ -1363,7 +1363,7 @@ export function ForensicReportView({
       {/* Limitations & Next Steps */}
       {analysis.geminiSummary && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          <div className="bg-white border border-[#E5EAF2] rounded-xl p-6">
+          <div className="tl-glass-panel rounded-2xl p-6">
             <h2 className="text-sm font-semibold text-[#172554]">Confidence Limitations</h2>
             <ul className="mt-3 space-y-2 text-xs leading-relaxed text-[#64748B] list-disc pl-4">
               {analysis.geminiSummary.confidenceLimitations.map((lim, i) => (
@@ -1371,7 +1371,7 @@ export function ForensicReportView({
               ))}
             </ul>
           </div>
-          <div className="bg-white border border-[#E5EAF2] rounded-xl p-6">
+          <div className="tl-glass-panel rounded-2xl p-6">
             <h2 className="text-sm font-semibold text-[#172554]">Recommended Next Steps</h2>
             <ul className="mt-3 space-y-2 text-xs leading-relaxed text-[#64748B] list-disc pl-4">
               {analysis.geminiSummary.recommendedNextSteps.map((step, i) => (

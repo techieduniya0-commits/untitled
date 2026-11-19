@@ -321,8 +321,8 @@ export async function runImageDetectionPipeline(options: {
   );
   const tAi = Date.now();
   const resizedForGemini = await sharp(filePath, { limitInputPixels: MAX_IMAGE_PIXELS })
-    .resize({ width: 1280, height: 1280, fit: 'inside', withoutEnlargement: true })
-    .jpeg({ quality: 90 })
+    .resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 84 })
     .toBuffer();
 
   const geminiPrompt = [

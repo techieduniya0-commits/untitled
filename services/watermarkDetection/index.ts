@@ -121,8 +121,8 @@ async function createEdgeStripBuffer(
     const top = edge === 'bottom' ? Math.max(0, h - stripHeight) : 0;
     return await sharp(filePath, { limitInputPixels: MAX_IMAGE_PIXELS })
       .extract({ left: 0, top, width: w, height: stripHeight })
-      .resize({ width: Math.min(w, 1280), withoutEnlargement: true })
-      .jpeg({ quality: 92 })
+      .resize({ width: Math.min(w, 960), withoutEnlargement: true })
+      .jpeg({ quality: 84 })
       .toBuffer();
   } catch {
     return null;
@@ -235,8 +235,8 @@ export async function runWatermarkDetection(options: {
   const selectedFrames = frames.slice(0, 8);
   for (const frame of selectedFrames) {
     const resizedFull = await sharp(frame.filePath, { limitInputPixels: MAX_IMAGE_PIXELS })
-      .resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: 88 })
+      .resize({ width: 896, height: 896, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 82 })
       .toBuffer();
 
     frameCatalogLines.push(

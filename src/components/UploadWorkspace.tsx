@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import type { AnalysisRecord, MediaType } from '../types/forensics';
 import { formatBytes, mediaTypeLabel } from '../lib/formatters';
+import { PremiumButton } from './PremiumUi';
 
 interface UploadWorkspaceProps {
   maxUploadSizeMb: number;
@@ -488,10 +489,10 @@ export function UploadWorkspace({
           setIsDragging(false);
           if (e.dataTransfer.files?.length) void addFiles(e.dataTransfer.files);
         }}
-        className={`rounded-xl border-2 border-dashed p-10 text-center transition-colors ${
+        className={`rounded-2xl border-2 border-dashed p-10 text-center transition-all duration-300 backdrop-blur-xl ${
           isDragging
-            ? 'border-[#2563EB] bg-[#2563EB]/5'
-            : 'border-[#CBD5E1] bg-white hover:border-[#2563EB]/60'
+            ? 'border-[#7C3AED] bg-gradient-to-br from-[#EFF6FF]/90 to-[#F3F0FF]/90 shadow-[0_18px_40px_-14px_rgba(124,58,237,0.22)]'
+            : 'border-[#BFDBFE] bg-white/75 hover:border-[#A78BFA] hover:bg-white/88 shadow-[0_8px_28px_-14px_rgba(37,99,235,0.12)]'
         }`}
       >
         <input
@@ -508,14 +509,14 @@ export function UploadWorkspace({
           className="hidden"
         />
 
-        <div className="w-12 h-12 rounded-xl bg-[#F5F7FB] border border-[#E5EAF2] flex items-center justify-center mx-auto mb-4">
-          <Upload className="w-5 h-5 text-[#2563EB]" />
+        <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#EFF6FF] to-[#F3F0FF] border border-[#DBEAFE] flex items-center justify-center mx-auto mb-4 shadow-xs">
+          <Upload className="w-5 h-5 text-[#5B21B6]" />
         </div>
 
-        <p className="text-base font-semibold text-[#172554]">
+        <p className="text-base font-semibold text-[#0F172A]">
           Drag and drop media files here, or browse from your device
         </p>
-        <p className="mt-1.5 text-xs text-[#64748B]">
+        <p className="mt-1.5 text-xs text-[#52607A]">
           Images (JPG, JPEG, PNG, WEBP) · Videos (MP4, MOV, WEBM) · Documents (PDF, DOCX, TXT) ·
           Audio (WAV, MP3, M4A)
         </p>
@@ -525,14 +526,14 @@ export function UploadWorkspace({
         </p>
 
         <div className="mt-5 flex items-center justify-center gap-3">
-          <button
-            type="button"
+          <PremiumButton
+            variant="primary"
+            size="md"
             disabled={isUploading}
             onClick={() => inputRef.current?.click()}
-            className="px-4 py-2 text-xs font-medium text-white bg-[#2563EB] hover:bg-[#1D4ED8] rounded-lg transition-colors cursor-pointer disabled:opacity-50"
           >
             Browse files
-          </button>
+          </PremiumButton>
         </div>
       </div>
 
@@ -564,13 +565,13 @@ export function UploadWorkspace({
 
       {/* Queued Files List + Explicit Upload Stage Separation */}
       {queue.length > 0 && (
-        <div className="bg-white border border-[#E5EAF2] rounded-xl overflow-hidden">
-          <div className="px-6 py-4 border-b border-[#E5EAF2] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="tl-glass-panel rounded-2xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-[#DCE8F8]/80 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <h2 className="text-sm font-semibold text-[#172554]">
+              <h2 className="text-sm font-semibold text-[#0F172A]">
                 Upload Queue ({queue.length} {queue.length === 1 ? 'file' : 'files'})
               </h2>
-              <p className="text-xs text-[#64748B] mt-0.5">
+              <p className="text-xs text-[#52607A] mt-0.5">
                 Transfer status is tracked independently from the 8-stage server forensic pipeline
               </p>
             </div>
@@ -586,23 +587,25 @@ export function UploadWorkspace({
                   Cancel upload
                 </button>
               ) : (
-                <button
-                  type="button"
+                <PremiumButton
+                  variant="primary"
+                  size="md"
                   disabled={isValidating}
                   onClick={handleUploadAndAnalyse}
-                  className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-white bg-[#2563EB] hover:bg-[#1D4ED8] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
                 >
-                  {uploadStage === 'failed' || uploadStage === 'cancelled'
-                    ? 'Retry upload & analysis'
-                    : 'Start forensic analysis'}
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
+                  <span>
+                    {uploadStage === 'failed' || uploadStage === 'cancelled'
+                      ? 'Retry upload & analysis'
+                      : 'Start forensic analysis'}
+                  </span>
+                  <ArrowRight className="w-3.5 h-3.5 transition-transform duration-200 group-hover:translate-x-0.5" />
+                </PremiumButton>
               )}
             </div>
           </div>
 
           {/* Separated Upload Lifecycle Strip */}
-          <div className="px-6 py-3 bg-[#F5F7FB] border-b border-[#E5EAF2] space-y-2.5">
+          <div className="px-6 py-3 bg-[#EFF6FF]/45 border-b border-[#DCE8F8]/80 space-y-2.5">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
               <span className="font-semibold text-[#172554]">Upload stage:</span>
               {uploadSteps.map((step, idx) => {
@@ -645,9 +648,9 @@ export function UploadWorkspace({
                     {uploadProgress}%
                   </span>
                 </div>
-                <div className="h-1.5 bg-[#E5EAF2] rounded-full overflow-hidden">
+                <div className="h-1.5 bg-[#DBEAFE] rounded-full overflow-hidden">
                   <div
-                    className="h-full bg-[#2563EB] transition-all duration-150"
+                    className="h-full bg-gradient-to-r from-[#2563EB] to-[#7C3AED] transition-all duration-150"
                     style={{ width: `${uploadProgress}%` }}
                   />
                 </div>
@@ -717,15 +720,15 @@ export function UploadWorkspace({
       )}
 
       {/* Sample Specimens for Immediate End-to-End Verification */}
-      <div className="bg-white border border-[#E5EAF2] rounded-xl p-6">
+      <div className="tl-glass-panel rounded-2xl p-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
           <div>
-            <h2 className="text-sm font-semibold text-[#172554]">
+            <h2 className="text-sm font-semibold text-[#0F172A]">
               Test with built-in sample specimens
             </h2>
-            <p className="text-xs text-[#64748B] mt-0.5">
+            <p className="text-xs text-[#52607A] mt-0.5">
               Runs the real server-side extraction, pixel/stylometric forensics, watermark scanner,
-              and Gemini reasoning pipeline end to end.
+              and multimodal reasoning pipeline end to end.
             </p>
           </div>
         </div>
@@ -735,20 +738,20 @@ export function UploadWorkspace({
             type="button"
             disabled={runningSample || isUploading}
             onClick={() => onRunSample('image')}
-            className="text-left p-4 rounded-lg border border-[#E5EAF2] bg-[#F5F7FB]/50 hover:bg-[#F5F7FB] hover:border-[#2563EB]/50 transition-colors cursor-pointer disabled:opacity-50"
+            className="group text-left p-4 rounded-xl border border-[#DCE8F8] bg-white/75 hover:bg-white hover:border-[#A78BFA]/70 hover:-translate-y-0.5 hover:shadow-[0_12px_28px_-12px_rgba(124,58,237,0.18)] transition-all duration-250 ease-[cubic-bezier(0.22,1,0.36,1)] cursor-pointer disabled:opacity-50"
           >
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
-                <ImageIcon className="w-4 h-4 text-[#2563EB]" />
-                <span className="text-sm font-semibold text-[#172554]">
+                <ImageIcon className="w-4 h-4 text-[#5B21B6]" />
+                <span className="text-sm font-semibold text-[#0F172A]">
                   Research Pavilion Specimen (JPEG)
                 </span>
               </div>
-              <ArrowRight className="w-4 h-4 text-[#64748B]" />
+              <ArrowRight className="w-4 h-4 text-[#64748B] transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-[#5B21B6]" />
             </div>
-            <p className="mt-1.5 text-xs text-[#64748B] leading-relaxed">
+            <p className="mt-1.5 text-xs text-[#52607A] leading-relaxed">
               Executes the full Image Forensics Pipeline including sharp ELA + Q90/Q75 double-JPEG
-              delta, noise residuals, edge-strip watermark OCR, EXIF/C2PA inspection, and Gemini
+              delta, noise residuals, edge-strip watermark OCR, EXIF/C2PA inspection, and multimodal
               visual reasoning.
             </p>
           </button>
@@ -757,18 +760,18 @@ export function UploadWorkspace({
             type="button"
             disabled={runningSample || isUploading}
             onClick={() => onRunSample('document')}
-            className="text-left p-4 rounded-lg border border-[#E5EAF2] bg-[#F5F7FB]/50 hover:bg-[#F5F7FB] hover:border-[#2563EB]/50 transition-colors cursor-pointer disabled:opacity-50"
+            className="group text-left p-4 rounded-xl border border-[#DCE8F8] bg-white/75 hover:bg-white hover:border-[#A78BFA]/70 hover:-translate-y-0.5 hover:shadow-[0_12px_28px_-12px_rgba(124,58,237,0.18)] transition-all duration-250 ease-[cubic-bezier(0.22,1,0.36,1)] cursor-pointer disabled:opacity-50"
           >
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
                 <FileText className="w-4 h-4 text-[#2563EB]" />
-                <span className="text-sm font-semibold text-[#172554]">
+                <span className="text-sm font-semibold text-[#0F172A]">
                   Municipal Water Briefing (TXT)
                 </span>
               </div>
-              <ArrowRight className="w-4 h-4 text-[#64748B]" />
+              <ArrowRight className="w-4 h-4 text-[#64748B] transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-[#5B21B6]" />
             </div>
-            <p className="mt-1.5 text-xs text-[#64748B] leading-relaxed">
+            <p className="mt-1.5 text-xs text-[#52607A] leading-relaxed">
               Mixed formal and field-note document testing quantitative stylometry, burstiness CV,
               4-gram repetition, passage highlighting, and AI-text limitation disclaimers.
             </p>

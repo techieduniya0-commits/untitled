@@ -74,7 +74,7 @@ export function SettingsView({ onSettingsChanged }: SettingsViewProps) {
       {/* Pipeline & Retention Policy Form */}
       <form
         onSubmit={handleSave}
-        className="bg-white border border-[#E5EAF2] rounded-xl p-6 space-y-5"
+        className="tl-glass-panel rounded-2xl p-6 space-y-5"
       >
         <h2 className="text-base font-semibold text-[#172554]">
           Retention &amp; Forensic Pipeline Controls
@@ -160,7 +160,7 @@ export function SettingsView({ onSettingsChanged }: SettingsViewProps) {
           <button
             type="submit"
             disabled={saving}
-            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-white bg-[#2563EB] hover:bg-[#1D4ED8] rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-white bg-gradient-to-r from-[#172554] via-[#2563EB] to-[#6D28D9] hover:shadow-[0_10px_24px_-6px_rgba(124,58,237,0.4)] hover:-translate-y-0.5 rounded-xl transition-all duration-200 cursor-pointer disabled:opacity-50"
           >
             <Save className="w-3.5 h-3.5" />
             {saving ? 'Saving…' : 'Save configuration'}
@@ -169,27 +169,27 @@ export function SettingsView({ onSettingsChanged }: SettingsViewProps) {
       </form>
 
       {/* Storage Transparency */}
-      <div className="bg-white border border-[#E5EAF2] rounded-xl p-6 space-y-2.5">
+      <div className="tl-glass-panel rounded-2xl p-6 space-y-2.5">
         <div className="flex items-center gap-2">
-          <Info className="w-4 h-4 text-[#2563EB]" />
-          <h2 className="text-base font-semibold text-[#172554]">Storage &amp; Persistence</h2>
+          <Info className="w-4 h-4 text-[#5B21B6]" />
+          <h2 className="text-base font-semibold text-[#0F172A]">Storage &amp; Persistence</h2>
         </div>
-        <p className="text-xs font-mono text-[#172554]">{settings.storageBackend}</p>
-        <p className="text-xs leading-relaxed text-[#64748B]">{settings.storageNotice}</p>
+        <p className="text-xs font-mono text-[#0F172A]">{settings.storageBackend}</p>
+        <p className="text-xs leading-relaxed text-[#52607A]">{settings.storageNotice}</p>
       </div>
 
       {/* Active Forensic Runtime Inventory */}
       {capabilities && (
-        <div className="bg-white border border-[#E5EAF2] rounded-xl overflow-hidden">
-          <div className="px-6 py-4 border-b border-[#E5EAF2]">
-            <h2 className="text-base font-semibold text-[#172554]">
+        <div className="tl-glass-panel rounded-2xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-[#DCE8F8]/80">
+            <h2 className="text-base font-semibold text-[#0F172A]">
               Verified Forensic Runtime Capabilities
             </h2>
-            <p className="text-xs text-[#64748B] mt-0.5">
+            <p className="text-xs text-[#52607A] mt-0.5">
               TruthLens only claims capabilities that are installed and verified on the server.
             </p>
           </div>
-          <div className="divide-y divide-[#E5EAF2] text-xs">
+          <div className="divide-y divide-[#DCE8F8]/70 text-xs">
             {[
               [
                 'FFmpeg / FFprobe (Video & Audio Processing)',

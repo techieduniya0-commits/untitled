@@ -12,6 +12,7 @@ import {
   Upload,
   X,
 } from 'lucide-react';
+import { PremiumButton } from './PremiumUi';
 import { TruthLensLogo } from './TruthLensLogo';
 
 export type WorkspaceTab =
@@ -63,18 +64,18 @@ export function WorkspaceShell({
 
   const sidebarContent = (
     <div className="flex flex-col h-full">
-      <div className="h-16 px-5 flex items-center justify-between border-b border-[#E5EAF2]">
+      <div className="h-16 px-5 flex items-center justify-between border-b border-[#DCE8F8]/80">
         <button
           type="button"
           onClick={onReturnHome}
-          className="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB] rounded-md"
+          className="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7C3AED] rounded-md"
         >
-          <TruthLensLogo />
+          <TruthLensLogo variant="light" />
         </button>
         <button
           type="button"
           onClick={() => setMobileMenuOpen(false)}
-          className="lg:hidden p-1.5 text-[#64748B] hover:text-[#172554] cursor-pointer"
+          className="lg:hidden p-1.5 text-[#52607A] hover:text-[#0F172A] cursor-pointer"
           aria-label="Close navigation"
         >
           <X className="w-5 h-5" />
@@ -93,24 +94,24 @@ export function WorkspaceShell({
                 onNavigate(item.id);
                 setMobileMenuOpen(false);
               }}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
+              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-xl transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] whitespace-nowrap cursor-pointer ${
                 active
-                  ? 'bg-[#2563EB]/10 text-[#2563EB]'
-                  : 'text-[#64748B] hover:bg-[#F5F7FB] hover:text-[#172554]'
+                  ? 'bg-gradient-to-r from-[#EFF6FF] via-[#F3F0FF] to-[#EEF2FF] text-[#5B21B6] border border-[#DDD6FE]/80 shadow-[0_2px_10px_-4px_rgba(124,58,237,0.2)]'
+                  : 'text-[#52607A] border border-transparent hover:bg-white/75 hover:text-[#0F172A] hover:border-[#DCE8F8]'
               }`}
             >
-              <Icon className="w-4 h-4 shrink-0" />
+              <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-[#6D28D9]' : ''}`} />
               <span className="truncate">{item.label}</span>
             </button>
           );
         })}
       </nav>
 
-      <div className="p-3 border-t border-[#E5EAF2]">
+      <div className="p-3 border-t border-[#DCE8F8]/80">
         <button
           type="button"
           onClick={onReturnHome}
-          className="w-full flex items-center gap-3 px-3 py-2 text-xs font-medium text-[#64748B] hover:text-[#172554] hover:bg-[#F5F7FB] rounded-lg transition-colors cursor-pointer"
+          className="w-full flex items-center gap-3 px-3 py-2 text-xs font-medium text-[#52607A] hover:text-[#0F172A] hover:bg-white/75 rounded-xl transition-colors cursor-pointer"
         >
           <Home className="w-4 h-4 shrink-0" />
           <span>Public homepage</span>
@@ -120,9 +121,9 @@ export function WorkspaceShell({
   );
 
   return (
-    <div className="min-h-screen bg-[#F5F7FB] text-[#172554] flex">
-      {/* Desktop Sidebar */}
-      <aside className="hidden lg:block w-[248px] shrink-0 bg-white border-r border-[#E5EAF2] sticky top-0 h-screen">
+    <div className="relative z-10 min-h-screen text-[#0F172A] flex">
+      {/* Desktop Frosted Glass Sidebar — Blends Into Continuous White/Pale-Blue Gradient */}
+      <aside className="hidden lg:block w-[252px] shrink-0 bg-white/72 backdrop-blur-xl border-r border-[#DCE8F8]/85 sticky top-0 h-screen">
         {sidebarContent}
       </aside>
 
@@ -130,10 +131,10 @@ export function WorkspaceShell({
       {mobileMenuOpen && (
         <div className="fixed inset-0 z-50 lg:hidden flex">
           <div
-            className="fixed inset-0 bg-[#172554]/30"
+            className="fixed inset-0 bg-[#0F172A]/25 backdrop-blur-xs"
             onClick={() => setMobileMenuOpen(false)}
           />
-          <aside className="relative w-[264px] max-w-[85vw] bg-white h-full border-r border-[#E5EAF2] z-10">
+          <aside className="relative w-[264px] max-w-[85vw] bg-white/95 backdrop-blur-xl h-full border-r border-[#DCE8F8] z-10">
             {sidebarContent}
           </aside>
         </div>
@@ -141,35 +142,35 @@ export function WorkspaceShell({
 
       {/* Main Content Canvas */}
       <div className="flex-1 min-w-0 flex flex-col">
-        <header className="h-16 bg-white border-b border-[#E5EAF2] px-4 sm:px-8 flex items-center justify-between gap-4 sticky top-0 z-20">
+        <header className="h-16 bg-white/70 backdrop-blur-xl border-b border-[#DCE8F8]/85 px-4 sm:px-8 flex items-center justify-between gap-4 sticky top-0 z-20">
           <div className="flex items-center gap-3 min-w-0">
             <button
               type="button"
               onClick={() => setMobileMenuOpen(true)}
-              className="lg:hidden p-2 -ml-2 text-[#64748B] hover:text-[#172554] cursor-pointer"
+              className="lg:hidden p-2 -ml-2 text-[#52607A] hover:text-[#0F172A] cursor-pointer"
               aria-label="Open navigation"
             >
               <Menu className="w-5 h-5" />
             </button>
             <div className="flex items-center gap-2 text-sm min-w-0">
-              <span className="text-[#64748B] whitespace-nowrap">TruthLens</span>
-              <span className="text-[#CBD5E1]" aria-hidden="true">
+              <span className="text-[#52607A] whitespace-nowrap">TruthLens</span>
+              <span className="text-[#BFDBFE]" aria-hidden="true">
                 /
               </span>
-              <span className="font-medium text-[#172554] truncate">{breadcrumb}</span>
+              <span className="font-medium text-[#0F172A] truncate">{breadcrumb}</span>
             </div>
           </div>
 
           <div className="flex items-center gap-3 shrink-0">
             {primaryAction ?? (
-              <button
-                type="button"
+              <PremiumButton
+                variant="primary"
+                size="md"
                 onClick={() => onNavigate('upload')}
-                className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium text-white bg-[#2563EB] hover:bg-[#1D4ED8] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <Upload className="w-3.5 h-3.5" />
-                Upload media
-              </button>
+                <span>Upload media</span>
+              </PremiumButton>
             )}
           </div>
         </header>

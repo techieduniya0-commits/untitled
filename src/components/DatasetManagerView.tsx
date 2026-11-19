@@ -322,7 +322,7 @@ export function DatasetManagerView() {
       {/* Dataset Validation & Split Statistics */}
       {validation && (
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-          <div className="bg-white border border-[#E5EAF2] rounded-xl p-4">
+          <div className="tl-glass-panel rounded-2xl p-4">
             <p className="text-xs text-[#64748B]">Total schema rows</p>
             <p className="mt-1 text-2xl font-bold font-mono tabular-nums text-[#172554]">
               {validation.totalRecords}
@@ -331,7 +331,7 @@ export function DatasetManagerView() {
               {validation.illustrativeSeedCount} illustrative seed(s)
             </p>
           </div>
-          <div className="bg-white border border-[#E5EAF2] rounded-xl p-4">
+          <div className="tl-glass-panel rounded-2xl p-4">
             <p className="text-xs text-[#64748B]">Train / Val / Test</p>
             <p className="mt-1 text-2xl font-bold font-mono tabular-nums text-[#172554]">
               {validation.splitCounts.train} / {validation.splitCounts.validation} /{' '}
@@ -341,7 +341,7 @@ export function DatasetManagerView() {
               {validation.splitCounts.live_upload} live upload log(s)
             </p>
           </div>
-          <div className="bg-white border border-[#E5EAF2] rounded-xl p-4">
+          <div className="tl-glass-panel rounded-2xl p-4">
             <p className="text-xs text-[#64748B]">Leakage &amp; Duplicates</p>
             <p
               className={`mt-1 text-2xl font-bold font-mono tabular-nums ${
@@ -356,14 +356,14 @@ export function DatasetManagerView() {
             </p>
             <p className="mt-1 text-[11px] text-[#64748B]">Cross-split or ID collisions</p>
           </div>
-          <div className="bg-white border border-[#E5EAF2] rounded-xl p-4">
+          <div className="tl-glass-panel rounded-2xl p-4">
             <p className="text-xs text-[#64748B]">Missing metadata</p>
             <p className="mt-1 text-2xl font-bold font-mono tabular-nums text-[#D97706]">
               {validation.missingMetadataCount}
             </p>
             <p className="mt-1 text-[11px] text-[#64748B]">Rows with metadata_present=false</p>
           </div>
-          <div className="bg-white border border-[#E5EAF2] rounded-xl p-4">
+          <div className="tl-glass-panel rounded-2xl p-4">
             <p className="text-xs text-[#64748B]">Consent / License gaps</p>
             <p className="mt-1 text-2xl font-bold font-mono tabular-nums text-[#172554]">
               {validation.missingConsentOrLicenseCount}
@@ -385,7 +385,7 @@ export function DatasetManagerView() {
       )}
 
       {/* Live Benchmark Evaluation & Calibration Card */}
-      <div className="bg-white border border-[#E5EAF2] rounded-xl p-5 space-y-4">
+      <div className="tl-glass-panel rounded-2xl p-5 space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div>
             <h2 className="text-sm font-semibold text-[#172554]">
@@ -576,7 +576,7 @@ export function DatasetManagerView() {
       {showAddForm && (
         <form
           onSubmit={handleCreateRecord}
-          className="bg-white border border-[#E5EAF2] rounded-xl p-6 space-y-4"
+          className="tl-glass-panel rounded-2xl p-6 space-y-4"
         >
           <h2 className="text-sm font-semibold text-[#172554]">Add Labeled Dataset Record</h2>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
@@ -742,7 +742,7 @@ export function DatasetManagerView() {
       )}
 
       {/* Split Filter Tabs + Table */}
-      <div className="bg-white border border-[#E5EAF2] rounded-xl overflow-hidden">
+      <div className="tl-glass-panel rounded-2xl overflow-hidden">
         <div className="px-6 py-3.5 border-b border-[#E5EAF2] flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-1 p-1 bg-[#F5F7FB] border border-[#E5EAF2] rounded-lg">
             {SPLIT_TABS.map((tab) => (

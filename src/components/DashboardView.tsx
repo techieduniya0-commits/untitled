@@ -25,6 +25,7 @@ import {
   formatDateTime,
   mediaTypeLabel,
 } from '../lib/formatters';
+import { GlassCard, PremiumButton } from './PremiumUi';
 
 interface DashboardViewProps {
   analyses: AnalysisRecord[];
@@ -142,22 +143,22 @@ export function DashboardView({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-          <button
-            type="button"
+          <PremiumButton
+            variant="secondary"
+            size="md"
             disabled={runningSample}
             onClick={() => onRunSample('image')}
-            className="px-3.5 py-2 text-xs font-medium text-[#172554] bg-white hover:bg-[#F5F7FB] border border-[#E5EAF2] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
           >
             {runningSample ? 'Starting sample...' : 'Try sample image'}
-          </button>
-          <button
-            type="button"
+          </PremiumButton>
+          <PremiumButton
+            variant="primary"
+            size="md"
             onClick={onStartUpload}
-            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-white bg-[#2563EB] hover:bg-[#1D4ED8] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Upload className="w-3.5 h-3.5" />
-            Upload media
-          </button>
+            <span>Upload media</span>
+          </PremiumButton>
         </div>
       </div>
 
@@ -189,26 +190,23 @@ export function DashboardView({
             accent: 'text-[#16A34A]',
           },
         ].map((kpi) => (
-          <div
-            key={kpi.label}
-            className="bg-white border border-[#E5EAF2] rounded-xl p-5"
-          >
-            <p className="text-xs font-medium text-[#64748B]">{kpi.label}</p>
+          <GlassCard key={kpi.label} className="p-5">
+            <p className="text-xs font-medium text-[#52607A]">{kpi.label}</p>
             {loading ? (
-              <div className="mt-2.5 h-8 w-16 rounded bg-[#F5F7FB] animate-pulse" />
+              <div className="mt-2.5 h-8 w-16 rounded bg-[#EFF6FF] animate-pulse" />
             ) : (
               <p className={`mt-2 text-3xl font-bold font-mono tabular-nums ${kpi.accent}`}>
                 {kpi.value}
               </p>
             )}
             <p className="mt-2 text-xs text-[#64748B]">{kpi.sub}</p>
-          </div>
+          </GlassCard>
         ))}
       </div>
 
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        <div className="lg:col-span-7 bg-white border border-[#E5EAF2] rounded-xl p-6">
+        <div className="lg:col-span-7 tl-glass-panel rounded-2xl p-6">
           <div className="flex items-center justify-between gap-4 mb-5">
             <div>
               <h2 className="text-base font-semibold text-[#172554]">Detection activity</h2>
@@ -255,7 +253,7 @@ export function DashboardView({
           </div>
         </div>
 
-        <div className="lg:col-span-5 bg-white border border-[#E5EAF2] rounded-xl p-6">
+        <div className="lg:col-span-5 tl-glass-panel rounded-2xl p-6">
           <div className="mb-5">
             <h2 className="text-base font-semibold text-[#172554]">Media-type distribution</h2>
             <p className="text-xs text-[#64748B] mt-0.5">
@@ -302,8 +300,8 @@ export function DashboardView({
       </div>
 
       {/* Recent Activity */}
-      <div className="bg-white border border-[#E5EAF2] rounded-xl overflow-hidden">
-        <div className="px-6 py-4 border-b border-[#E5EAF2] flex items-center justify-between gap-4">
+      <div className="tl-glass-panel rounded-2xl overflow-hidden">
+        <div className="px-6 py-4 border-b border-[#DCE8F8]/80 flex items-center justify-between gap-4">
           <div>
             <h2 className="text-base font-semibold text-[#172554]">Recent forensic activity</h2>
             <p className="text-xs text-[#64748B] mt-0.5">
@@ -327,37 +325,33 @@ export function DashboardView({
               sample specimen to test the full forensic pipeline.
             </p>
             <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
-              <button
-                type="button"
-                onClick={onStartUpload}
-                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-white bg-[#2563EB] hover:bg-[#1D4ED8] rounded-lg transition-colors cursor-pointer"
-              >
+              <PremiumButton variant="primary" size="md" onClick={onStartUpload}>
                 <Upload className="w-3.5 h-3.5" />
-                Upload your first file
-              </button>
-              <button
-                type="button"
+                <span>Upload your first file</span>
+              </PremiumButton>
+              <PremiumButton
+                variant="secondary"
+                size="md"
                 disabled={runningSample}
                 onClick={() => onRunSample('image')}
-                className="px-4 py-2 text-xs font-medium text-[#172554] bg-[#F5F7FB] hover:bg-[#E5EAF2]/70 border border-[#E5EAF2] rounded-lg transition-colors cursor-pointer disabled:opacity-50"
               >
                 Analyse sample architectural photo
-              </button>
-              <button
-                type="button"
+              </PremiumButton>
+              <PremiumButton
+                variant="secondary"
+                size="md"
                 disabled={runningSample}
                 onClick={() => onRunSample('document')}
-                className="px-4 py-2 text-xs font-medium text-[#172554] bg-[#F5F7FB] hover:bg-[#E5EAF2]/70 border border-[#E5EAF2] rounded-lg transition-colors cursor-pointer disabled:opacity-50"
               >
                 Analyse sample text document
-              </button>
+              </PremiumButton>
             </div>
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
-                <tr className="border-b border-[#E5EAF2] bg-[#F5F7FB]/60 text-xs font-medium text-[#64748B]">
+                <tr className="border-b border-[#DCE8F8]/80 bg-[#EFF6FF]/45 text-xs font-medium text-[#52607A]">
                   <th className="py-3 px-6">File</th>
                   <th className="py-3 px-4">Type</th>
                   <th className="py-3 px-4 text-right">AI-Likelihood</th>
@@ -367,14 +361,14 @@ export function DashboardView({
                   <th className="py-3 px-6 text-right">Action</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[#E5EAF2] text-sm">
+              <tbody className="divide-y divide-[#DCE8F8]/70 text-sm">
                 {analyses.slice(0, 8).map((item) => {
                   const tone = classificationTone(item.scoring?.classification);
                   return (
                     <tr
                       key={item.id}
                       onClick={() => onOpenAnalysis(item)}
-                      className="hover:bg-[#F5F7FB]/70 transition-colors cursor-pointer"
+                      className="hover:bg-[#EFF6FF]/55 transition-colors cursor-pointer"
                     >
                       <td className="py-3.5 px-6">
                         <div className="flex items-center gap-3 min-w-0">

@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
+import { motion, useReducedMotion } from 'motion/react';
 import type { AnalysisRecord, AppSettings } from './types/forensics';
+import { MOTION_DURATION, MOTION_EASE } from './lib/motion';
 import { AnalysisWorkspace } from './components/AnalysisWorkspace';
 import { DashboardView } from './components/DashboardView';
 import { DatasetManagerView } from './components/DatasetManagerView';
 import { ForensicReportView } from './components/ForensicReportView';
+import { GlobalAmbientCanvas } from './components/GlobalAmbientCanvas';
+import { GlobalMagnifier } from './components/GlobalMagnifier';
 import { HistoryView } from './components/HistoryView';
 import { LandingPage } from './components/LandingPage';
 import { SettingsView } from './components/SettingsView';
@@ -26,6 +30,7 @@ export default function App() {
   });
   const [runningSample, setRunningSample] = useState(false);
   const [toastError, setToastError] = useState<string | null>(null);
+  const prefersReducedMotion = Boolean(useReducedMotion());
 
   const fetchAnalyses = useCallback(async () => {
     setLoadingAnalyses(true);
@@ -72,6 +77,7 @@ export default function App() {
   const handleEnterWorkspace = (initialTab: 'overview' | 'upload' = 'overview') => {
     setInWorkspace(true);
     setActiveTab(initialTab);
+    window.scrollTo({ top: 0, behavior: 'auto' });
   };
 
   const handleAnalysesStarted = (created: AnalysisRecord[]) => {
@@ -232,10 +238,6 @@ export default function App() {
     });
   };
 
-  if (!inWorkspace) {
-    return <LandingPage onEnterWorkspace={handleEnterWorkspace} />;
-  }
-
   const breadcrumbMap: Record<WorkspaceTab, string> = {
     overview: 'Overview',
     upload: 'New analysis',
@@ -249,15 +251,34 @@ export default function App() {
   };
 
   return (
-    <WorkspaceShell
-      activeTab={activeTab}
-      breadcrumb={breadcrumbMap[activeTab]}
-      onNavigate={(tab) => {
-        setToastError(null);
-        setActiveTab(tab);
-      }}
-      onReturnHome={() => setInWorkspace(false)}
-    >
+    <div className="relative min-h-screen">
+      {/* Continuous White & Pale-Blue Gradient Across Every Page and Section */}
+      <GlobalAmbientCanvas />
+
+      {/* Desktop-Wide Smooth Optical Magnifying Glass */}
+      <GlobalMagnifier />
+
+      {!inWorkspace ? (
+        <LandingPage onEnterWorkspace={handleEnterWorkspace} />
+      ) : (
+        <WorkspaceShell
+          activeTab={activeTab}
+          breadcrumb={breadcrumbMap[activeTab]}
+          onNavigate={(tab) => {
+            setToastError(null);
+            setActiveTab(tab);
+          }}
+          onReturnHome={() => {
+            setInWorkspace(false);
+            window.scrollTo({ top: 0, behavior: 'auto' });
+          }}
+        >
+          <motion.div
+            key={`${activeTab}-${activeAnalysisId ?? ''}-${selectedReport?.id ?? ''}`}
+            initial={prefersReducedMotion ? false : { opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: MOTION_DURATION.fast + 0.12, ease: MOTION_EASE.apple }}
+          >
       {toastError && (
         <div
           role="alert"
@@ -359,6 +380,9 @@ export default function App() {
           onRetryAnalysis={handleRetryAnalysis}
         />
       )}
-    </WorkspaceShell>
+          </motion.div>
+        </WorkspaceShell>
+      )}
+    </div>
   );
 }

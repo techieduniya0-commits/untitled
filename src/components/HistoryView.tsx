@@ -19,6 +19,7 @@ import {
   formatDateTime,
   mediaTypeLabel,
 } from '../lib/formatters';
+import { PremiumButton } from './PremiumUi';
 
 interface HistoryViewProps {
   mode: 'analyses' | 'history' | 'reports';
@@ -126,21 +127,21 @@ export function HistoryView({
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-[-0.02em] text-[#172554]">{title}</h1>
-          <p className="mt-1 text-sm text-[#64748B] max-w-2xl">{subtitle}</p>
+          <h1 className="text-2xl font-bold tracking-[-0.02em] text-[#0F172A]">{title}</h1>
+          <p className="mt-1 text-sm text-[#52607A] max-w-2xl">{subtitle}</p>
         </div>
-        <button
-          type="button"
+        <PremiumButton
+          variant="primary"
+          size="md"
           onClick={onStartUpload}
-          className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-white bg-[#2563EB] hover:bg-[#1D4ED8] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
         >
           <Upload className="w-3.5 h-3.5" />
-          New analysis
-        </button>
+          <span>New analysis</span>
+        </PremiumButton>
       </div>
 
       {/* Filter Toolbar */}
-      <div className="bg-white border border-[#E5EAF2] rounded-xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+      <div className="tl-glass-panel rounded-2xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div className="relative flex-1 max-w-md">
           <Search className="w-4 h-4 text-[#64748B] absolute left-3 top-1/2 -translate-y-1/2" />
           <input
@@ -148,21 +149,21 @@ export function HistoryView({
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search filename, analysis ID, or SHA-256 hash…"
-            className="w-full pl-9 pr-3 py-2 text-xs bg-[#F5F7FB] border border-[#E5EAF2] rounded-lg text-[#172554] placeholder:text-[#64748B] focus:outline-none focus:border-[#2563EB]"
+            className="w-full pl-9 pr-3 py-2 text-xs bg-white/80 border border-[#DCE8F8] rounded-xl text-[#0F172A] placeholder:text-[#64748B] focus:outline-none focus:border-[#7C3AED]"
           />
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-1 p-1 bg-[#F5F7FB] border border-[#E5EAF2] rounded-lg overflow-x-auto">
+          <div className="flex items-center gap-1 p-1 bg-[#EFF6FF]/75 border border-[#DCE8F8] rounded-xl overflow-x-auto">
             {MEDIA_FILTERS.map((tab) => (
               <button
                 key={tab.id}
                 type="button"
                 onClick={() => setMediaFilter(tab.id)}
-                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                className={`px-2.5 py-1 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   mediaFilter === tab.id
-                    ? 'bg-white text-[#172554] shadow-sm'
-                    : 'text-[#64748B] hover:text-[#172554]'
+                    ? 'bg-white text-[#5B21B6] shadow-xs'
+                    : 'text-[#52607A] hover:text-[#0F172A]'
                 }`}
               >
                 {tab.label}
@@ -174,7 +175,7 @@ export function HistoryView({
             aria-label="Filter by classification"
             value={classFilter}
             onChange={(e) => setClassFilter(e.target.value as 'all' | Classification)}
-            className="px-3 py-1.5 text-xs bg-white border border-[#E5EAF2] rounded-lg text-[#172554] focus:outline-none focus:border-[#2563EB]"
+            className="px-3 py-1.5 text-xs bg-white/85 border border-[#DCE8F8] rounded-xl text-[#0F172A] focus:outline-none focus:border-[#7C3AED]"
           >
             {CLASSIFICATION_OPTIONS.map((opt) => (
               <option key={opt} value={opt}>
@@ -186,7 +187,7 @@ export function HistoryView({
       </div>
 
       {/* Results Table */}
-      <div className="bg-white border border-[#E5EAF2] rounded-xl overflow-hidden">
+      <div className="tl-glass-panel rounded-2xl overflow-hidden">
         {loading ? (
           <div className="p-6 space-y-3">
             {[1, 2, 3, 4].map((n) => (
@@ -206,7 +207,7 @@ export function HistoryView({
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
-                <tr className="border-b border-[#E5EAF2] bg-[#F5F7FB]/60 text-xs font-medium text-[#64748B]">
+                <tr className="border-b border-[#DCE8F8]/80 bg-[#EFF6FF]/45 text-xs font-medium text-[#52607A]">
                   <th className="py-3 px-6">File &amp; Hash</th>
                   <th className="py-3 px-4">Media</th>
                   <th className="py-3 px-4 text-right">Estimate</th>
@@ -216,13 +217,13 @@ export function HistoryView({
                   <th className="py-3 px-6 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[#E5EAF2] text-sm">
+              <tbody className="divide-y divide-[#DCE8F8]/70 text-sm">
                 {filtered.map((item) => {
                   const tone = classificationTone(item.scoring?.classification);
                   const isConfirming = confirmDeleteId === item.id;
 
                   return (
-                    <tr key={item.id} className="hover:bg-[#F5F7FB]/60 transition-colors">
+                    <tr key={item.id} className="hover:bg-[#EFF6FF]/50 transition-colors">
                       <td
                         onClick={() => onOpenAnalysis(item)}
                         className="py-3.5 px-6 cursor-pointer"

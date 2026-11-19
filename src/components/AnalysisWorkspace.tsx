@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import type { AnalysisRecord, PipelineStage } from '../types/forensics';
 import { formatBytes, formatDateTime, mediaTypeLabel } from '../lib/formatters';
+import { PremiumButton } from './PremiumUi';
 
 interface AnalysisWorkspaceProps {
   analysisId: string;
@@ -211,7 +212,7 @@ export function AnalysisWorkspace({
   return (
     <div className="space-y-6 max-w-[960px]">
       {/* File Header Card */}
-      <div className="bg-white border border-[#E5EAF2] rounded-xl p-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="tl-glass-panel rounded-2xl p-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#64748B] font-mono tabular-nums">
             <span>{record.id}</span>
@@ -255,16 +256,18 @@ export function AnalysisWorkspace({
             </button>
           )}
           {isReportReady && (
-            <button
-              type="button"
+            <PremiumButton
+              variant="primary"
+              size="md"
               onClick={() => onViewReport(record)}
-              className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-medium text-white bg-[#2563EB] hover:bg-[#1D4ED8] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              {record.status === 'partially_completed'
-                ? 'Open Partial Report'
-                : 'Open Forensic Report'}
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
+              <span>
+                {record.status === 'partially_completed'
+                  ? 'Open Partial Report'
+                  : 'Open Forensic Report'}
+              </span>
+              <ArrowRight className="w-3.5 h-3.5 transition-transform duration-200 group-hover:translate-x-0.5" />
+            </PremiumButton>
           )}
           {record.status === 'failed' && (
             <button
@@ -335,8 +338,8 @@ export function AnalysisWorkspace({
       )}
 
       {/* 8 Real Backend Pipeline Stages */}
-      <div className="bg-white border border-[#E5EAF2] rounded-xl overflow-hidden">
-        <div className="px-6 py-4 border-b border-[#E5EAF2] flex items-center justify-between gap-4">
+      <div className="tl-glass-panel rounded-2xl overflow-hidden">
+        <div className="px-6 py-4 border-b border-[#DCE8F8]/80 flex items-center justify-between gap-4">
           <div>
             <h2 className="text-sm font-semibold text-[#172554]">
               Live Backend Processing Stages
@@ -423,16 +426,16 @@ export function AnalysisWorkspace({
 
       {/* Completion Preview Bar */}
       {isReportReady && record.scoring && (
-        <div className="bg-white border border-[#E5EAF2] rounded-xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="tl-glass-panel rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <p className="text-xs text-[#64748B]">
+            <p className="text-xs text-[#52607A]">
               {record.scoring.calibrationLabel}
               {record.status === 'partially_completed' ? ' · Partial report' : ''}
             </p>
-            <p className="mt-1 text-lg font-bold text-[#172554] font-mono tabular-nums">
+            <p className="mt-1 text-lg font-bold text-[#0F172A] font-mono tabular-nums">
               {record.scoring.aiLikelihoodScore}/100 — {record.scoring.classification}
             </p>
-            <p className="mt-0.5 text-xs text-[#64748B]">
+            <p className="mt-0.5 text-xs text-[#52607A]">
               Evidence strength: {record.scoring.evidenceStrength} ·{' '}
               {record.scoring.methodsPerformedCount} completed ·{' '}
               {record.scoring.methodsFailedCount > 0
@@ -441,16 +444,18 @@ export function AnalysisWorkspace({
               {record.scoring.methodsUnavailableCount} unavailable disclosed
             </p>
           </div>
-          <button
-            type="button"
+          <PremiumButton
+            variant="primary"
+            size="md"
             onClick={() => onViewReport(record)}
-            className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-[#172554] hover:bg-[#1E3A8A] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
-            {record.status === 'partially_completed'
-              ? 'Inspect partial forensic report'
-              : 'Inspect full forensic report'}
-            <ArrowRight className="w-4 h-4" />
-          </button>
+            <span>
+              {record.status === 'partially_completed'
+                ? 'Inspect partial forensic report'
+                : 'Inspect full forensic report'}
+            </span>
+            <ArrowRight className="w-4 h-4 transition-transform duration-200 group-hover:translate-x-0.5" />
+          </PremiumButton>
         </div>
       )}
     </div>

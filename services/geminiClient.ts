@@ -31,19 +31,31 @@ export interface GeminiRetryPolicy {
   defaultTimeoutMs: number;
 }
 
+const IS_SERVERLESS_ENV = Boolean(
+  process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY,
+);
+
 export const GEMINI_RETRY_POLICY: GeminiRetryPolicy = {
   maxRetriesPerModel: Math.max(
     1,
-    Math.min(4, Number.parseInt(process.env.GEMINI_MAX_RETRIES ?? '2', 10) || 2),
+    Math.min(
+      3,
+      Number.parseInt(process.env.GEMINI_MAX_RETRIES ?? (IS_SERVERLESS_ENV ? '1' : '2'), 10) ||
+        (IS_SERVERLESS_ENV ? 1 : 2),
+    ),
   ),
   baseDelayMs: Math.max(
     300,
-    Math.min(5000, Number.parseInt(process.env.GEMINI_RETRY_BASE_MS ?? '900', 10) || 900),
+    Math.min(5000, Number.parseInt(process.env.GEMINI_RETRY_BASE_MS ?? '700', 10) || 700),
   ),
-  maxDelayMs: 8_000,
+  maxDelayMs: 6_000,
   defaultTimeoutMs: Math.max(
     10_000,
-    Math.min(60_000, Number.parseInt(process.env.GEMINI_TIMEOUT_MS ?? '25000', 10) || 25_000),
+    Math.min(
+      60_000,
+      Number.parseInt(process.env.GEMINI_TIMEOUT_MS ?? (IS_SERVERLESS_ENV ? '20000' : '32000'), 10) ||
+        (IS_SERVERLESS_ENV ? 20_000 : 32_000),
+    ),
   ),
 };
 
@@ -51,6 +63,7 @@ export type GeminiErrorCode =
   | 'API_KEY_UNAVAILABLE'
   | 'GEMINI_HIGH_DEMAND_503'
   | 'GEMINI_RATE_LIMIT_429'
+  | 'GEMINI_MODEL_UNAVAILABLE'
   | 'GEMINI_NETWORK_ERROR'
   | 'GEMINI_API_FAILURE'
   | 'PROCESSING_TIMEOUT'
@@ -233,6 +246,21 @@ function classifyUpstreamError(error: unknown, attemptsMade: number): GeminiServ
     );
   }
 
+  if (
+    lower.includes('404') ||
+    lower.includes('not_found') ||
+    lower.includes('is not found') ||
+    lower.includes('not supported for generatecontent')
+  ) {
+    return new GeminiServiceError(
+      `HTTP 404 — Requested Gemini model unavailable (${rawMsg.slice(0, 140)}). Falling back to alternative configured model.`,
+      'GEMINI_MODEL_UNAVAILABLE',
+      404,
+      true,
+      attemptsMade,
+    );
+  }
+
   if (lower.includes('500') || lower.includes('502') || lower.includes('504') || lower.includes('internal')) {
     return new GeminiServiceError(
       `Temporary upstream Gemini server error: ${rawMsg.slice(0, 160)}`,
@@ -328,28 +356,31 @@ export async function runStructuredGeminiAnalysisWithMeta<T>(options: {
       : null;
 
   const ai = activeOverride ? null : getGeminiClient();
-  const timeoutMs = Math.min(
-    options.timeoutMs ?? GEMINI_RETRY_POLICY.defaultTimeoutMs,
-    45_000,
-  );
+  const rawTimeout = options.timeoutMs ?? GEMINI_RETRY_POLICY.defaultTimeoutMs;
+  const timeoutMs = IS_SERVERLESS_ENV
+    ? Math.min(rawTimeout, 20_000)
+    : Math.min(Math.max(rawTimeout, 28_000), 45_000);
   const maxRetriesPerModel = options.maxRetriesPerModel ?? GEMINI_RETRY_POLICY.maxRetriesPerModel;
   const baseDelayMs = options.baseDelayMs ?? GEMINI_RETRY_POLICY.baseDelayMs;
   const candidateModels = getConfiguredGeminiModels();
 
-  // Build ordered execution plan: [primary x maxRetriesPerModel, fallback x maxRetriesPerModel]
+  // Interleave primary and fallback models so a stalled/503 primary immediately fails over on attempt 2
+  // instead of waiting for two consecutive full timeouts on the same model.
   const attemptPlan: string[] = [];
-  for (const model of candidateModels) {
-    for (let r = 0; r < maxRetriesPerModel; r++) {
+  for (let r = 0; r < maxRetriesPerModel; r++) {
+    for (const model of candidateModels) {
       attemptPlan.push(model);
     }
   }
+  const unavailableModels = new Set<string>();
 
   let lastClassified: GeminiServiceError | null = null;
   let attemptsMade = 0;
 
   for (let idx = 0; idx < attemptPlan.length; idx++) {
     const modelName = attemptPlan[idx];
-    attemptsMade = idx + 1;
+    if (unavailableModels.has(modelName)) continue;
+    attemptsMade += 1;
 
     try {
       let rawText: string;
@@ -357,16 +388,22 @@ export async function runStructuredGeminiAnalysisWithMeta<T>(options: {
       if (activeOverride) {
         rawText = await activeOverride(modelName, attemptsMade);
       } else {
+        const controller = new AbortController();
         const config: Record<string, unknown> = {
           systemInstruction: options.systemInstruction
             ? `${STRICT_FORENSIC_SYSTEM_INSTRUCTION}\n\n${options.systemInstruction}`
             : STRICT_FORENSIC_SYSTEM_INSTRUCTION,
           responseMimeType: 'application/json',
           responseSchema: options.responseSchema,
+          abortSignal: controller.signal,
         };
-        if (modelName === 'gemini-4-hydrogen' && options.thinkingLevel) {
+        if (modelName === 'gemini-4-hydrogen') {
           config.thinkingConfig = {
-            thinkingLevel: options.thinkingLevel,
+            thinkingLevel: options.thinkingLevel ?? ThinkingLevel.LOW,
+          };
+        } else if (modelName === 'gemini-3.1-flash-lite') {
+          config.thinkingConfig = {
+            thinkingLevel: ThinkingLevel.MINIMAL,
           };
         }
 
@@ -379,6 +416,7 @@ export async function runStructuredGeminiAnalysisWithMeta<T>(options: {
         let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
         const timeoutPromise = new Promise<never>((_, reject) => {
           timeoutHandle = setTimeout(() => {
+            controller.abort();
             reject(
               new GeminiServiceError(
                 `Gemini request (${modelName}) timed out after ${Math.round(timeoutMs / 1000)}s.`,
@@ -415,15 +453,26 @@ export async function runStructuredGeminiAnalysisWithMeta<T>(options: {
         throw classified;
       }
 
-      const hasMoreAttempts = idx < attemptPlan.length - 1;
-      if (!hasMoreAttempts) {
+      // If a specific model returned 404 NOT_FOUND, skip any remaining attempts on that model
+      if (classified.code === 'GEMINI_MODEL_UNAVAILABLE') {
+        unavailableModels.add(modelName);
+      }
+
+      // Find next viable attempt in plan
+      let nextModel: string | null = null;
+      for (let j = idx + 1; j < attemptPlan.length; j++) {
+        if (!unavailableModels.has(attemptPlan[j])) {
+          nextModel = attemptPlan[j];
+          break;
+        }
+      }
+      if (!nextModel) {
         break;
       }
 
-      const nextModel = attemptPlan[idx + 1];
       const switchingModel = nextModel !== modelName;
       const delayMs = switchingModel
-        ? Math.min(1200, computeJitteredBackoffMs(0, baseDelayMs, GEMINI_RETRY_POLICY.maxDelayMs))
+        ? Math.min(800, computeJitteredBackoffMs(0, baseDelayMs, GEMINI_RETRY_POLICY.maxDelayMs))
         : computeJitteredBackoffMs(idx, baseDelayMs, GEMINI_RETRY_POLICY.maxDelayMs);
 
       options.onRetry?.({
