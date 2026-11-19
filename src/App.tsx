@@ -33,7 +33,15 @@ export default function App() {
       const res = await fetch('/api/analyses');
       if (res.ok) {
         const data = await res.json();
-        setAnalyses(data.analyses ?? []);
+        const serverList = (data.analyses ?? []) as AnalysisRecord[];
+        setAnalyses((prev) => {
+          const merged = new Map<string, AnalysisRecord>();
+          for (const item of prev) merged.set(item.id, item);
+          for (const item of serverList) merged.set(item.id, item);
+          return Array.from(merged.values()).sort(
+            (a, b) => new Date(b.uploadDate).getTime() - new Date(a.uploadDate).getTime(),
+          );
+        });
       }
     } catch {
       // Ignore transient network errors on initial load
@@ -67,7 +75,18 @@ export default function App() {
   };
 
   const handleAnalysesStarted = (created: AnalysisRecord[]) => {
-    setAnalyses((prev) => [...created, ...prev]);
+    setToastError(null);
+    setSelectedReport(null);
+    setAnalyses((prev) => {
+      const byId = new Map<string, AnalysisRecord>();
+      for (const item of created) byId.set(item.id, item);
+      for (const item of prev) {
+        if (!byId.has(item.id)) byId.set(item.id, item);
+      }
+      return Array.from(byId.values()).sort(
+        (a, b) => new Date(b.uploadDate).getTime() - new Date(a.uploadDate).getTime(),
+      );
+    });
     if (created.length > 0) {
       setActiveAnalysisId(created[0].id);
       setActiveTab('analysis-live');
@@ -135,13 +154,25 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sampleType }),
       });
-      const data = await res.json();
+      const rawText = await res.text();
+      let data: { analysis?: AnalysisRecord; error?: string } = {};
+      try {
+        data = JSON.parse(rawText) as { analysis?: AnalysisRecord; error?: string };
+      } catch {
+        data = {
+          error:
+            res.status === 404
+              ? 'Backend API endpoint /api/analyses/sample returned 404 (not found).'
+              : `Unexpected server response (${res.status}).`,
+        };
+      }
       if (!res.ok || !data.analysis) {
-        setToastError(data.error || 'Failed to launch sample specimen analysis.');
+        setToastError(data.error || `Failed to launch sample specimen analysis (${res.status}).`);
         return;
       }
-      const created = data.analysis as AnalysisRecord;
-      setAnalyses((prev) => [created, ...prev]);
+      const created = data.analysis;
+      setSelectedReport(null);
+      setAnalyses((prev) => [created, ...prev.filter((item) => item.id !== created.id)]);
       setActiveAnalysisId(created.id);
       setActiveTab('analysis-live');
     } catch {
@@ -298,13 +329,19 @@ export default function App() {
       {activeTab === 'analysis-live' && activeAnalysisId && (
         <AnalysisWorkspace
           analysisId={activeAnalysisId}
+          initialRecord={analyses.find((a) => a.id === activeAnalysisId) ?? null}
           onAnalysisUpdated={handleAnalysisUpdated}
           onViewReport={(rec) => {
             setSelectedReport(rec);
             setActiveTab('report-detail');
           }}
           onRetryAnalysis={handleRetryAnalysis}
-          onNewUpload={() => setActiveTab('upload')}
+          onNewUpload={() => {
+            setToastError(null);
+            setSelectedReport(null);
+            setActiveAnalysisId(null);
+            setActiveTab('upload');
+          }}
         />
       )}
 
@@ -312,6 +349,12 @@ export default function App() {
         <ForensicReportView
           analysis={selectedReport}
           onBack={() => setActiveTab('reports')}
+          onNewUpload={() => {
+            setToastError(null);
+            setSelectedReport(null);
+            setActiveAnalysisId(null);
+            setActiveTab('upload');
+          }}
           onSaveToDataset={handleSaveAnalysisToDataset}
           onRetryAnalysis={handleRetryAnalysis}
         />

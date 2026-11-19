@@ -1,4 +1,6 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import type {
   AnalysisRecord,
@@ -9,8 +11,15 @@ import type {
   GroundTruthLabel,
 } from '../src/types/forensics.ts';
 
-export const DATA_DIR = path.resolve(process.cwd(), 'data');
-export const UPLOADS_DIR = path.resolve(process.cwd(), 'uploads');
+export const IS_SERVERLESS = Boolean(
+  process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY,
+);
+export const DATA_DIR = IS_SERVERLESS
+  ? path.join(os.tmpdir(), 'truthlens-data')
+  : path.resolve(process.cwd(), 'data');
+export const UPLOADS_DIR = IS_SERVERLESS
+  ? path.join(os.tmpdir(), 'truthlens-uploads-store')
+  : path.resolve(process.cwd(), 'uploads');
 const ANALYSES_FILE = path.join(DATA_DIR, 'analyses.json');
 const DATASETS_FILE = path.join(DATA_DIR, 'datasets.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
@@ -55,9 +64,12 @@ const DEFAULT_SETTINGS: AppSettings = {
   retainOriginalMediaHours: 24,
   videoFrameSampleCount: 6,
   maxUploadSizeMb: 50,
-  storageBackend: 'Local server filesystem JSON persistence (./data)',
-  storageNotice:
-    'Analysis reports and dataset schemas persist to local server disk storage in this container. Uploaded media files are stored temporarily and automatically purged after the configured retention window or immediately upon deletion.',
+  storageBackend: IS_SERVERLESS
+    ? 'Serverless temporary storage (/tmp/truthlens-data)'
+    : 'Local server filesystem JSON persistence (./data)',
+  storageNotice: IS_SERVERLESS
+    ? 'Running in serverless mode: analysis records and media are processed inside ephemeral /tmp storage and returned directly to your active session.'
+    : 'Analysis reports and dataset schemas persist to local server disk storage in this container. Uploaded media files are stored temporarily and automatically purged after the configured retention window or immediately upon deletion.',
 };
 
 const ILLUSTRATIVE_SEED_DATASETS: DatasetRecord[] = [
@@ -212,6 +224,8 @@ const ILLUSTRATIVE_SEED_DATASETS: DatasetRecord[] = [
 ];
 
 let writeLock: Promise<void> = Promise.resolve();
+let analysesCache: AnalysisRecord[] | null = null;
+const deletedAnalysisIds = new Set<string>();
 
 function serializedWrite<T>(fn: () => Promise<T>): Promise<T> {
   const next = writeLock.then(fn, fn);
@@ -255,7 +269,8 @@ async function readJsonSafe<T>(filePath: string, fallback: T): Promise<T> {
 }
 
 async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
-  const tmpPath = `${filePath}.${Date.now()}.tmp`;
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.tmp`;
   await fs.writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
   await fs.rename(tmpPath, filePath);
 }
@@ -263,25 +278,55 @@ async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
 // Analyses CRUD
 export async function listAnalyses(): Promise<AnalysisRecord[]> {
   await ensureStorageReady();
-  const list = await readJsonSafe<AnalysisRecord[]>(ANALYSES_FILE, []);
-  return list.sort((a, b) => new Date(b.uploadDate).getTime() - new Date(a.uploadDate).getTime());
+  const diskList = await readJsonSafe<AnalysisRecord[] | null>(ANALYSES_FILE, null);
+  let resolved: AnalysisRecord[];
+  if (Array.isArray(diskList)) {
+    // Merge with in-memory cache in case a write is actively flushing
+    if (analysesCache && analysesCache.length > 0 && diskList.length === 0) {
+      resolved = [...analysesCache];
+    } else {
+      const byId = new Map<string, AnalysisRecord>();
+      for (const item of diskList) {
+        if (!deletedAnalysisIds.has(item.id)) byId.set(item.id, item);
+      }
+      analysesCache = Array.from(byId.values());
+      resolved = [...analysesCache];
+    }
+  } else {
+    resolved = analysesCache ? [...analysesCache] : [];
+  }
+  return resolved.sort((a, b) => new Date(b.uploadDate).getTime() - new Date(a.uploadDate).getTime());
 }
 
 export async function getAnalysisById(id: string): Promise<AnalysisRecord | null> {
+  if (deletedAnalysisIds.has(id)) return null;
+  if (analysesCache) {
+    const cached = analysesCache.find((item) => item.id === id);
+    if (cached) return cached;
+  }
   const list = await listAnalyses();
   return list.find((item) => item.id === id) ?? null;
 }
 
 export async function upsertAnalysis(record: AnalysisRecord): Promise<AnalysisRecord> {
   return serializedWrite(async () => {
+    if (deletedAnalysisIds.has(record.id)) {
+      return record;
+    }
     await ensureStorageReady();
-    const list = await readJsonSafe<AnalysisRecord[]>(ANALYSES_FILE, []);
+    const diskList = await readJsonSafe<AnalysisRecord[] | null>(ANALYSES_FILE, null);
+    const list = Array.isArray(diskList)
+      ? diskList.filter((item) => !deletedAnalysisIds.has(item.id))
+      : analysesCache
+        ? [...analysesCache]
+        : [];
     const idx = list.findIndex((item) => item.id === record.id);
     if (idx >= 0) {
       list[idx] = record;
     } else {
       list.unshift(record);
     }
+    analysesCache = [...list];
     await atomicWriteJson(ANALYSES_FILE, list);
     return record;
   });
@@ -290,15 +335,19 @@ export async function upsertAnalysis(record: AnalysisRecord): Promise<AnalysisRe
 export async function deleteAnalysis(id: string): Promise<boolean> {
   return serializedWrite(async () => {
     await ensureStorageReady();
-    const list = await readJsonSafe<AnalysisRecord[]>(ANALYSES_FILE, []);
+    const diskList = await readJsonSafe<AnalysisRecord[] | null>(ANALYSES_FILE, null);
+    const list = Array.isArray(diskList) ? diskList : analysesCache ? [...analysesCache] : [];
     const next = list.filter((item) => item.id !== id);
-    if (next.length === list.length) return false;
-    await atomicWriteJson(ANALYSES_FILE, next);
+    deletedAnalysisIds.add(id);
+    analysesCache = [...next];
+    if (next.length !== list.length) {
+      await atomicWriteJson(ANALYSES_FILE, next);
+    }
 
     // Purge stored media and extracted frames immediately
     const analysisUploadDir = path.join(UPLOADS_DIR, id);
     await fs.rm(analysisUploadDir, { recursive: true, force: true }).catch(() => undefined);
-    return true;
+    return next.length !== list.length;
   });
 }
 

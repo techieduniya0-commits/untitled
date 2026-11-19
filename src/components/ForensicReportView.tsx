@@ -16,6 +16,7 @@ import {
   Play,
   RefreshCw,
   ScanEye,
+  Upload,
   XCircle,
 } from 'lucide-react';
 import {
@@ -39,6 +40,7 @@ import {
 interface ForensicReportViewProps {
   analysis: AnalysisRecord;
   onBack: () => void;
+  onNewUpload?: () => void;
   onSaveToDataset: (analysis: AnalysisRecord) => Promise<void>;
   onRetryAnalysis?: (id: string) => Promise<void>;
 }
@@ -46,6 +48,7 @@ interface ForensicReportViewProps {
 export function ForensicReportView({
   analysis,
   onBack,
+  onNewUpload,
   onSaveToDataset,
   onRetryAnalysis,
 }: ForensicReportViewProps) {
@@ -112,12 +115,17 @@ export function ForensicReportView({
   };
 
   const handleExportJson = () => {
+    const blob = new Blob([JSON.stringify(analysis, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.href = `/api/analyses/${encodeURIComponent(analysis.id)}/export/json`;
+    link.href = url;
     link.download = `truthlens-report-${analysis.id}.json`;
     document.body.appendChild(link);
     link.click();
     link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const handleSaveDataset = async () => {
@@ -363,6 +371,16 @@ export function ForensicReportView({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {onNewUpload && (
+            <button
+              type="button"
+              onClick={onNewUpload}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-[#172554] bg-white hover:bg-[#F5F7FB] border border-[#E5EAF2] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              New upload
+            </button>
+          )}
           <button
             type="button"
             onClick={() => exportForensicPdfReport(analysis)}

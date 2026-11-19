@@ -206,8 +206,17 @@ function plannedMethodsForType(type: MediaType): string[] {
 
 function categorizeServerError(status: number, message: string): UploadErrorState {
   const lower = message.toLowerCase();
-  if (status === 413 || lower.includes('exceeds') || lower.includes('limit') || lower.includes('size')) {
+  if (status === 413 || lower.includes('exceeds') || lower.includes('limit') || lower.includes('size') || lower.includes('payload too large')) {
     return { category: 'Exceeds size limit', message, retryable: false };
+  }
+  if (status === 404) {
+    return {
+      category: 'Upload interrupted',
+      message:
+        message ||
+        'Upload endpoint (/api/analyses/upload) returned 404. Ensure the TruthLens backend API is deployed and reachable.',
+      retryable: true,
+    };
   }
   if (lower.includes('unsupported') || lower.includes('format') || lower.includes('mime')) {
     return { category: 'Unsupported format', message, retryable: false };
@@ -377,6 +386,9 @@ export function UploadWorkspace({
 
     xhr.onload = () => {
       xhrRef.current = null;
+      if (inputRef.current) {
+        inputRef.current.value = '';
+      }
       try {
         const data = JSON.parse(xhr.responseText);
         if (xhr.status >= 200 && xhr.status < 300 && Array.isArray(data.analyses)) {
@@ -398,11 +410,13 @@ export function UploadWorkspace({
         }
       } catch {
         setUploadStage('failed');
-        setUploadError({
-          category: 'Validation error',
-          message: `Server returned an unexpected response (${xhr.status}).`,
-          retryable: true,
-        });
+        const fallbackMsg =
+          xhr.status === 413
+            ? 'Uploaded file exceeds the hosting platform request body limit (4.5 MB on serverless deployments). Try a smaller file or run the Node server directly.'
+            : xhr.status === 404
+              ? 'Backend upload endpoint (/api/analyses/upload) returned 404. Please redeploy or restart the backend service and retry.'
+              : `Server returned an unexpected response (${xhr.status}).`;
+        setUploadError(categorizeServerError(xhr.status, fallbackMsg));
       }
     };
 
@@ -619,10 +633,13 @@ export function UploadWorkspace({
               <div>
                 <div className="flex items-center justify-between text-xs text-[#64748B] mb-1.5">
                   <span>
-                    Streaming bytes via XHR
-                    {bytesTransferred
-                      ? ` (${formatBytes(bytesTransferred.loaded)} / ${formatBytes(bytesTransferred.total)})`
-                      : '…'}
+                    {uploadProgress >= 100
+                      ? 'Transfer complete — initializing forensic pipeline on server…'
+                      : `Streaming bytes via XHR${
+                          bytesTransferred
+                            ? ` (${formatBytes(bytesTransferred.loaded)} / ${formatBytes(bytesTransferred.total)})`
+                            : '…'
+                        }`}
                   </span>
                   <span className="font-mono tabular-nums font-semibold text-[#172554]">
                     {uploadProgress}%

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
@@ -15,6 +15,7 @@ import { formatBytes, formatDateTime, mediaTypeLabel } from '../lib/formatters';
 
 interface AnalysisWorkspaceProps {
   analysisId: string;
+  initialRecord?: AnalysisRecord | null;
   onAnalysisUpdated: (record: AnalysisRecord) => void;
   onViewReport: (record: AnalysisRecord) => void;
   onRetryAnalysis: (id: string) => Promise<void>;
@@ -64,31 +65,75 @@ function stageStatusLabel(status: PipelineStage['status']): string {
 
 export function AnalysisWorkspace({
   analysisId,
+  initialRecord,
   onAnalysisUpdated,
   onViewReport,
   onRetryAnalysis,
   onNewUpload,
 }: AnalysisWorkspaceProps) {
-  const [record, setRecord] = useState<AnalysisRecord | null>(null);
+  const [record, setRecord] = useState<AnalysisRecord | null>(initialRecord ?? null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const initialRecordRef = useRef<AnalysisRecord | null | undefined>(initialRecord);
+  initialRecordRef.current = initialRecord;
 
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let notFoundRetries = 0;
+
+    const seeded =
+      initialRecordRef.current && initialRecordRef.current.id === analysisId
+        ? initialRecordRef.current
+        : null;
+
+    setFetchError(null);
+    setRecord(seeded);
+
+    // If the upload endpoint already returned a terminal record (e.g., synchronous serverless mode),
+    // render it directly without firing a GET poll that could hit a separate stateless container.
+    if (seeded && seeded.status !== 'processing' && !retrying) {
+      return () => {
+        active = false;
+      };
+    }
 
     const poll = async () => {
       try {
         const res = await fetch(`/api/analyses/${encodeURIComponent(analysisId)}`);
-        const data = await res.json();
+        const rawText = await res.text();
+        let data: { analysis?: AnalysisRecord; error?: string } = {};
+        try {
+          data = JSON.parse(rawText) as { analysis?: AnalysisRecord; error?: string };
+        } catch {
+          data = {
+            error:
+              res.status === 404
+                ? 'Analysis status endpoint returned 404 (record not found).'
+                : `Unexpected server response (${res.status}).`,
+          };
+        }
         if (!active) return;
 
         if (!res.ok) {
-          setFetchError(data.error || 'Could not load analysis status.');
+          // Retry briefly on transient 404 while initial disk write settles
+          if (res.status === 404 && notFoundRetries < 3) {
+            notFoundRetries += 1;
+            timer = setTimeout(poll, 800);
+            return;
+          }
+          setFetchError(data.error || `Could not load analysis status (${res.status}).`);
           return;
         }
 
-        const latest = data.analysis as AnalysisRecord;
+        if (!data.analysis) {
+          setFetchError('Analysis payload was empty.');
+          return;
+        }
+
+        notFoundRetries = 0;
+        setFetchError(null);
+        const latest = data.analysis;
         setRecord(latest);
         onAnalysisUpdated(latest);
 
