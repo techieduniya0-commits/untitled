@@ -4,17 +4,21 @@ import {
   ArrowRight,
   AudioWaveform,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   FileSearch,
   FileText,
   Film,
   Image as ImageIcon,
+  RefreshCw,
   RotateCcw,
   Trash2,
   Upload,
   X,
 } from 'lucide-react';
-import type { AnalysisRecord, MediaType } from '../types/forensics';
+import { ApiRequestError, uploadSingleFileWithProgress } from '../lib/api';
 import { formatBytes, mediaTypeLabel } from '../lib/formatters';
+import type { AnalysisRecord, MediaType } from '../types/forensics';
 import { PremiumButton } from './PremiumUi';
 
 interface UploadWorkspaceProps {
@@ -33,12 +37,20 @@ type UploadStage =
   | 'failed'
   | 'cancelled';
 
+type PerFileStatus = 'queued' | 'uploading' | 'uploaded' | 'failed' | 'cancelled';
+
 interface QueuedFile {
   id: string;
   file: File;
   mediaType: MediaType;
   previewUrl?: string;
   magicSignatureNote: string;
+  status: PerFileStatus;
+  progress: number;
+  loadedBytes: number;
+  error?: string;
+  errorDetails?: string;
+  analysis?: AnalysisRecord;
 }
 
 interface UploadErrorState {
@@ -47,9 +59,12 @@ interface UploadErrorState {
     | 'Exceeds size limit'
     | 'Upload interrupted'
     | 'Corrupted or invalid file'
-    | 'Validation error';
+    | 'Validation error'
+    | 'Server routing error';
   message: string;
+  details?: string;
   retryable: boolean;
+  suggestRefresh?: boolean;
 }
 
 const SUPPORTED_EXTENSIONS = new Set([
@@ -137,7 +152,6 @@ async function inspectClientHeaderSignature(
       return { ok: true, note: 'Deferred to server FFprobe & magic check' };
     }
 
-    // document (.docx ZIP signature or .txt UTF-8)
     const ext = `.${file.name.split('.').pop()?.toLowerCase() ?? ''}`;
     if (ext === '.docx') {
       if (startsWith([0x50, 0x4b, 0x03, 0x04])) return { ok: true, note: 'DOCX ZIP container verified' };
@@ -148,7 +162,6 @@ async function inspectClientHeaderSignature(
       };
     }
 
-    // Plain text: check for null bytes indicating binary spoofing
     const hasNullByte = bytes.some((b) => b === 0x00);
     if (hasNullByte) {
       return {
@@ -205,27 +218,63 @@ function plannedMethodsForType(type: MediaType): string[] {
   }
 }
 
-function categorizeServerError(status: number, message: string): UploadErrorState {
-  const lower = message.toLowerCase();
-  if (status === 413 || lower.includes('exceeds') || lower.includes('limit') || lower.includes('size') || lower.includes('payload too large')) {
-    return { category: 'Exceeds size limit', message, retryable: false };
-  }
-  if (status === 404) {
+function mapApiErrorToUploadError(err: unknown): UploadErrorState {
+  if (err instanceof ApiRequestError) {
+    if (err.code === 'NON_JSON_RESPONSE' || err.status === 404) {
+      return {
+        category: 'Server routing error',
+        message: err.message,
+        details: err.details,
+        retryable: true,
+        suggestRefresh: true,
+      };
+    }
+    if (err.status === 413 || err.message.toLowerCase().includes('exceeds') || err.message.toLowerCase().includes('limit')) {
+      return {
+        category: 'Exceeds size limit',
+        message: err.message,
+        details: err.details,
+        retryable: false,
+      };
+    }
+    if (err.code === 'CANCELLED' || err.code === 'NETWORK_ERROR' || err.code === 'UPLOAD_TIMEOUT') {
+      return {
+        category: 'Upload interrupted',
+        message: err.message,
+        details: err.details,
+        retryable: true,
+      };
+    }
+    const lower = err.message.toLowerCase();
+    if (lower.includes('unsupported') || lower.includes('format') || lower.includes('mime')) {
+      return {
+        category: 'Unsupported format',
+        message: err.message,
+        details: err.details,
+        retryable: false,
+      };
+    }
+    if (lower.includes('corrupt') || lower.includes('bomb') || lower.includes('invalid')) {
+      return {
+        category: 'Corrupted or invalid file',
+        message: err.message,
+        details: err.details,
+        retryable: false,
+      };
+    }
     return {
-      category: 'Upload interrupted',
-      message:
-        message ||
-        'Upload endpoint (/api/analyses/upload) returned 404. Ensure the TruthLens backend API is deployed and reachable.',
-      retryable: true,
+      category: 'Validation error',
+      message: err.message,
+      details: err.details,
+      retryable: err.retryable,
+      suggestRefresh: err.suggestRefresh,
     };
   }
-  if (lower.includes('unsupported') || lower.includes('format') || lower.includes('mime')) {
-    return { category: 'Unsupported format', message, retryable: false };
-  }
-  if (lower.includes('corrupt') || lower.includes('bomb') || lower.includes('decode') || lower.includes('invalid')) {
-    return { category: 'Corrupted or invalid file', message, retryable: false };
-  }
-  return { category: 'Validation error', message, retryable: status >= 500 || status === 0 };
+  return {
+    category: 'Upload interrupted',
+    message: err instanceof Error ? err.message : 'Unexpected upload failure.',
+    retryable: true,
+  };
 }
 
 export function UploadWorkspace({
@@ -238,35 +287,48 @@ export function UploadWorkspace({
   const [isDragging, setIsDragging] = useState(false);
   const [uploadStage, setUploadStage] = useState<UploadStage>('idle');
   const [uploadError, setUploadError] = useState<UploadErrorState | null>(null);
-  const [uploadProgress, setUploadProgress] = useState<number>(0);
-  const [bytesTransferred, setBytesTransferred] = useState<{ loaded: number; total: number } | null>(
-    null,
-  );
+  const [showErrorDetails, setShowErrorDetails] = useState(false);
+  const [completedInBatch, setCompletedInBatch] = useState<AnalysisRecord[]>([]);
+
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const xhrRef = useRef<XMLHttpRequest | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const submittingRef = useRef(false);
+  const previewUrlsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
+    const urls = previewUrlsRef.current;
     return () => {
-      if (xhrRef.current) {
-        xhrRef.current.abort();
-        xhrRef.current = null;
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+      for (const url of urls) {
+        URL.revokeObjectURL(url);
       }
-      for (const item of queue) {
-        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
-      }
+      urls.clear();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const isUploading = uploadStage === 'uploading';
   const isValidating = uploadStage === 'validating';
 
+  const aggregateProgress =
+    queue.length === 0
+      ? 0
+      : Math.round(queue.reduce((sum, item) => sum + item.progress, 0) / queue.length);
+
   const addFiles = async (incoming: FileList | File[]) => {
+    if (submittingRef.current) return;
     setUploadError(null);
+    setShowErrorDetails(false);
     setUploadStage('validating');
+
     const maxBytes = maxUploadSizeMb * 1024 * 1024;
     const accepted: QueuedFile[] = [];
     let firstError: UploadErrorState | null = null;
+
+    // Snapshot existing signatures to avoid accidentally adding the exact same file twice in one selection
+    const existingKeys = new Set(
+      queue.map((q) => `${q.file.name}::${q.file.size}::${q.file.lastModified}`),
+    );
 
     for (const file of Array.from(incoming)) {
       if (queue.length + accepted.length >= 6) {
@@ -277,6 +339,13 @@ export function UploadWorkspace({
         };
         break;
       }
+
+      const fileKey = `${file.name}::${file.size}::${file.lastModified}`;
+      if (existingKeys.has(fileKey)) {
+        continue;
+      }
+      existingKeys.add(fileKey);
+
       const type = detectClientMediaType(file);
       if (!type) {
         firstError = firstError ?? {
@@ -313,12 +382,18 @@ export function UploadWorkspace({
         continue;
       }
 
+      const previewUrl = type === 'image' ? URL.createObjectURL(file) : undefined;
+      if (previewUrl) previewUrlsRef.current.add(previewUrl);
+
       accepted.push({
-        id: `${file.name}-${file.size}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         file,
         mediaType: type,
-        previewUrl: type === 'image' ? URL.createObjectURL(file) : undefined,
+        previewUrl,
         magicSignatureNote: sig.note,
+        status: 'queued',
+        progress: 0,
+        loadedBytes: 0,
       });
     }
 
@@ -335,107 +410,167 @@ export function UploadWorkspace({
   };
 
   const removeFile = (id: string) => {
+    if (submittingRef.current) return;
     setQueue((prev) => {
       const target = prev.find((f) => f.id === id);
-      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+      if (target?.previewUrl) {
+        URL.revokeObjectURL(target.previewUrl);
+        previewUrlsRef.current.delete(target.previewUrl);
+      }
       const next = prev.filter((f) => f.id !== id);
       if (next.length === 0) {
         setUploadStage('idle');
         setUploadError(null);
+        setCompletedInBatch([]);
       }
       return next;
     });
   };
 
   const handleCancelUpload = () => {
-    if (xhrRef.current) {
-      xhrRef.current.abort();
-      xhrRef.current = null;
-    }
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    submittingRef.current = false;
     setUploadStage('cancelled');
-    setUploadProgress(0);
-    setBytesTransferred(null);
+    setQueue((prev) =>
+      prev.map((item) =>
+        item.status === 'uploading' || item.status === 'queued'
+          ? { ...item, status: 'cancelled', progress: 0, loadedBytes: 0 }
+          : item,
+      ),
+    );
     setUploadError({
       category: 'Upload interrupted',
-      message: 'Transfer was cancelled before completion. Your queued files remain ready to retry.',
+      message: 'Transfer cancelled before completion. Any remaining files stay queued and ready to retry.',
       retryable: true,
     });
   };
 
-  const handleUploadAndAnalyse = () => {
-    if (queue.length === 0 || isUploading || isValidating) return;
-    setUploadError(null);
-    setUploadStage('uploading');
-    setUploadProgress(0);
-    setBytesTransferred(null);
+  /**
+   * Uploads every pending/failed/cancelled file independently using its own isolated FormData request.
+   * Guarantees file #1 can never be reused for file #2, keeps every file within serverless payload limits,
+   * and allows partial batch recovery if a single file encounters an error.
+   */
+  const handleUploadAndAnalyse = async () => {
+    if (submittingRef.current || queue.length === 0 || isValidating) return;
 
-    const formData = new FormData();
-    for (const item of queue) {
-      formData.append('files', item.file);
+    const pendingItems = queue.filter((item) => item.status !== 'uploaded');
+    if (pendingItems.length === 0) {
+      if (completedInBatch.length > 0) {
+        onAnalysesStarted(completedInBatch);
+      }
+      return;
     }
 
-    const xhr = new XMLHttpRequest();
-    xhrRef.current = xhr;
-    xhr.open('POST', '/api/analyses/upload');
+    submittingRef.current = true;
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
-    xhr.upload.onprogress = (evt) => {
-      if (evt.lengthComputable) {
-        setUploadProgress(Math.round((evt.loaded / evt.total) * 100));
-        setBytesTransferred({ loaded: evt.loaded, total: evt.total });
-      }
-    };
+    setUploadError(null);
+    setShowErrorDetails(false);
+    setUploadStage('uploading');
 
-    xhr.onload = () => {
-      xhrRef.current = null;
-      if (inputRef.current) {
-        inputRef.current.value = '';
+    const createdAnalyses: AnalysisRecord[] = [...completedInBatch];
+    let lastError: UploadErrorState | null = null;
+    let wasCancelled = false;
+
+    for (const item of pendingItems) {
+      if (controller.signal.aborted) {
+        wasCancelled = true;
+        break;
       }
+
+      setQueue((prev) =>
+        prev.map((q) =>
+          q.id === item.id
+            ? { ...q, status: 'uploading', progress: 0, loadedBytes: 0, error: undefined, errorDetails: undefined }
+            : q,
+        ),
+      );
+
       try {
-        const data = JSON.parse(xhr.responseText);
-        if (xhr.status >= 200 && xhr.status < 300 && Array.isArray(data.analyses)) {
-          setUploadStage('completed');
-          setUploadProgress(100);
-          for (const item of queue) {
-            if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
-          }
-          setQueue([]);
-          onAnalysesStarted(data.analyses as AnalysisRecord[]);
-        } else {
-          setUploadStage('failed');
-          setUploadError(
-            categorizeServerError(
-              xhr.status,
-              data.error || `Upload failed with server status ${xhr.status}.`,
-            ),
+        const result = await uploadSingleFileWithProgress(item.file, {
+          signal: controller.signal,
+          onProgress: (pct, loaded) => {
+            setQueue((prev) =>
+              prev.map((q) => (q.id === item.id ? { ...q, progress: pct, loadedBytes: loaded } : q)),
+            );
+          },
+        });
+
+        createdAnalyses.push(result.analysis);
+        setCompletedInBatch([...createdAnalyses]);
+        setQueue((prev) =>
+          prev.map((q) =>
+            q.id === item.id
+              ? {
+                  ...q,
+                  status: 'uploaded',
+                  progress: 100,
+                  loadedBytes: q.file.size,
+                  analysis: result.analysis,
+                }
+              : q,
+          ),
+        );
+      } catch (err) {
+        if (err instanceof ApiRequestError && err.code === 'CANCELLED') {
+          wasCancelled = true;
+          setQueue((prev) =>
+            prev.map((q) => (q.id === item.id ? { ...q, status: 'cancelled', progress: 0 } : q)),
           );
+          break;
         }
-      } catch {
-        setUploadStage('failed');
-        const fallbackMsg =
-          xhr.status === 413
-            ? 'Uploaded file exceeds the hosting platform request body limit (4.5 MB on serverless deployments). Try a smaller file or run the Node server directly.'
-            : xhr.status === 404
-              ? 'Backend upload endpoint (/api/analyses/upload) returned 404. Please redeploy or restart the backend service and retry.'
-              : `Server returned an unexpected response (${xhr.status}).`;
-        setUploadError(categorizeServerError(xhr.status, fallbackMsg));
+
+        const mapped = mapApiErrorToUploadError(err);
+        lastError = mapped;
+        setQueue((prev) =>
+          prev.map((q) =>
+            q.id === item.id
+              ? {
+                  ...q,
+                  status: 'failed',
+                  progress: 0,
+                  error: mapped.message,
+                  errorDetails: mapped.details,
+                }
+              : q,
+          ),
+        );
       }
-    };
+    }
 
-    xhr.onerror = () => {
-      xhrRef.current = null;
-      setUploadStage('failed');
-      setUploadError({
-        category: 'Upload interrupted',
-        message: 'Network error interrupted the upload to the TruthLens backend. Check connectivity and retry.',
-        retryable: true,
-      });
-    };
+    abortControllerRef.current = null;
+    submittingRef.current = false;
 
-    xhr.onabort = () => {
-      xhrRef.current = null;
-    };
+    if (inputRef.current) {
+      inputRef.current.value = '';
+    }
 
-    xhr.send(formData);
+    if (wasCancelled) {
+      setUploadStage('cancelled');
+      return;
+    }
+
+    if (!lastError && createdAnalyses.length > 0) {
+      setUploadStage('completed');
+      for (const item of queue) {
+        if (item.previewUrl) {
+          URL.revokeObjectURL(item.previewUrl);
+          previewUrlsRef.current.delete(item.previewUrl);
+        }
+      }
+      setQueue([]);
+      setCompletedInBatch([]);
+      onAnalysesStarted(createdAnalyses);
+      return;
+    }
+
+    // Partial or full failure — keep failed files queued with clear retry & allow inspecting succeeded ones
+    setUploadStage('failed');
+    if (lastError) {
+      setUploadError(lastError);
+    }
   };
 
   const uploadSteps: Array<{ key: UploadStage; label: string }> = [
@@ -467,13 +602,13 @@ export function UploadWorkspace({
   return (
     <div className="space-y-7 max-w-[1000px]">
       <div>
-        <h1 className="text-2xl font-bold tracking-[-0.02em] text-[#172554]">
+        <h1 className="text-2xl font-bold tracking-[-0.02em] text-[#0F172A]">
           New Forensic Analysis
         </h1>
-        <p className="mt-1 text-sm text-[#64748B]">
+        <p className="mt-1 text-sm text-[#52607A]">
           Upload an image, video, PDF, text document, or audio recording. TruthLens validates
-          binary magic signatures before transfer, streams SHA-256 verification on the server, and
-          routes each file exclusively to its matching forensic pipeline.
+          binary magic signatures before transfer, uploads every file independently, and routes each
+          specimen exclusively to its matching forensic pipeline.
         </p>
       </div>
 
@@ -489,10 +624,10 @@ export function UploadWorkspace({
           setIsDragging(false);
           if (e.dataTransfer.files?.length) void addFiles(e.dataTransfer.files);
         }}
-        className={`rounded-2xl border-2 border-dashed p-10 text-center transition-all duration-300 backdrop-blur-xl ${
+        className={`rounded-2xl border-2 border-dashed p-8 sm:p-10 text-center transition-all duration-300 backdrop-blur-xl ${
           isDragging
             ? 'border-[#7C3AED] bg-gradient-to-br from-[#EFF6FF]/90 to-[#F3F0FF]/90 shadow-[0_18px_40px_-14px_rgba(124,58,237,0.22)]'
-            : 'border-[#BFDBFE] bg-white/75 hover:border-[#A78BFA] hover:bg-white/88 shadow-[0_8px_28px_-14px_rgba(37,99,235,0.12)]'
+            : 'border-[#BFDBFE] bg-white/78 hover:border-[#A78BFA] hover:bg-white/90 shadow-[0_8px_28px_-14px_rgba(37,99,235,0.12)]'
         }`}
       >
         <input
@@ -502,8 +637,9 @@ export function UploadWorkspace({
           accept=".jpg,.jpeg,.png,.webp,.mp4,.mov,.webm,.pdf,.docx,.txt,.wav,.mp3,.m4a"
           onChange={(e) => {
             if (e.target.files?.length) {
-              void addFiles(e.target.files);
+              const selected = Array.from(e.target.files);
               e.target.value = '';
+              void addFiles(selected);
             }
           }}
           className="hidden"
@@ -521,8 +657,8 @@ export function UploadWorkspace({
           Audio (WAV, MP3, M4A)
         </p>
         <p className="mt-1 text-xs font-mono tabular-nums text-[#64748B]">
-          Up to 6 files per batch · Max {maxUploadSizeMb} MB per file · 100 MP bomb guard · Files
-          are never executed
+          Up to 6 files per batch · Independent per-file transfer · Max {maxUploadSizeMb} MB per
+          file · 100 MP bomb guard
         </p>
 
         <div className="mt-5 flex items-center justify-center gap-3">
@@ -537,33 +673,80 @@ export function UploadWorkspace({
         </div>
       </div>
 
-      {/* Categorized Upload / Validation Error Banner */}
+      {/* Categorized Upload / Validation Error Banner with Retry, Refresh & Debug Details */}
       {uploadError && (
         <div
           role="alert"
-          className="bg-[#FEF2F2] border border-[#FECACA] rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-sm text-[#991B1B]"
+          className="bg-[#FEF2F2]/95 backdrop-blur-md border border-[#FECACA] rounded-2xl p-4 space-y-3 text-sm text-[#991B1B]"
         >
-          <div className="flex items-start gap-3">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-[#DC2626]" />
-            <div>
-              <p className="font-semibold text-xs">{uploadError.category}</p>
-              <p className="mt-0.5 text-xs leading-relaxed">{uploadError.message}</p>
+          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-[#DC2626]" />
+              <div>
+                <p className="font-semibold text-xs">{uploadError.category}</p>
+                <p className="mt-0.5 text-xs leading-relaxed">{uploadError.message}</p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {uploadError.retryable && queue.some((q) => q.status !== 'uploaded') && (
+                <button
+                  type="button"
+                  onClick={() => void handleUploadAndAnalyse()}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#991B1B] bg-white border border-[#FECACA] hover:bg-[#FEF2F2] rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  Retry upload
+                </button>
+              )}
+              {completedInBatch.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => onAnalysesStarted(completedInBatch)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-[#172554] hover:bg-[#1E3A8A] rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                >
+                  Inspect {completedInBatch.length} started
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              )}
+              {uploadError.suggestRefresh && (
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#991B1B] bg-white/80 border border-[#FECACA] hover:bg-white rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Refresh page
+                </button>
+              )}
             </div>
           </div>
-          {uploadError.retryable && queue.length > 0 && (
-            <button
-              type="button"
-              onClick={handleUploadAndAnalyse}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#991B1B] bg-white border border-[#FECACA] hover:bg-[#FEF2F2] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              Retry upload
-            </button>
+
+          {uploadError.details && (
+            <div className="pt-2 border-t border-[#FECACA]/70">
+              <button
+                type="button"
+                onClick={() => setShowErrorDetails((v) => !v)}
+                className="inline-flex items-center gap-1 text-[11px] font-medium text-[#991B1B]/80 hover:text-[#991B1B] cursor-pointer"
+              >
+                {showErrorDetails ? (
+                  <ChevronUp className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                )}
+                Technical details
+              </button>
+              {showErrorDetails && (
+                <p className="mt-1.5 font-mono text-[11px] text-[#7F1D1D] bg-white/70 border border-[#FECACA] rounded-lg px-3 py-2 break-all">
+                  {uploadError.details}
+                </p>
+              )}
+            </div>
           )}
         </div>
       )}
 
-      {/* Queued Files List + Explicit Upload Stage Separation */}
+      {/* Queued Files List + Independent Per-File Progress */}
       {queue.length > 0 && (
         <div className="tl-glass-panel rounded-2xl overflow-hidden">
           <div className="px-6 py-4 border-b border-[#DCE8F8]/80 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -572,7 +755,7 @@ export function UploadWorkspace({
                 Upload Queue ({queue.length} {queue.length === 1 ? 'file' : 'files'})
               </h2>
               <p className="text-xs text-[#52607A] mt-0.5">
-                Transfer status is tracked independently from the 8-stage server forensic pipeline
+                Each file uploads and runs independently through the 8-stage server forensic pipeline
               </p>
             </div>
 
@@ -591,12 +774,14 @@ export function UploadWorkspace({
                   variant="primary"
                   size="md"
                   disabled={isValidating}
-                  onClick={handleUploadAndAnalyse}
+                  onClick={() => void handleUploadAndAnalyse()}
                 >
                   <span>
                     {uploadStage === 'failed' || uploadStage === 'cancelled'
-                      ? 'Retry upload & analysis'
-                      : 'Start forensic analysis'}
+                      ? 'Retry remaining files'
+                      : queue.length > 1
+                        ? `Start forensic analysis (${queue.length} files)`
+                        : 'Start forensic analysis'}
                   </span>
                   <ArrowRight className="w-3.5 h-3.5 transition-transform duration-200 group-hover:translate-x-0.5" />
                 </PremiumButton>
@@ -605,9 +790,9 @@ export function UploadWorkspace({
           </div>
 
           {/* Separated Upload Lifecycle Strip */}
-          <div className="px-6 py-3 bg-[#EFF6FF]/45 border-b border-[#DCE8F8]/80 space-y-2.5">
+          <div className="px-6 py-3 bg-[#EFF6FF]/50 border-b border-[#DCE8F8]/80 space-y-2.5">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-              <span className="font-semibold text-[#172554]">Upload stage:</span>
+              <span className="font-semibold text-[#0F172A]">Upload stage:</span>
               {uploadSteps.map((step, idx) => {
                 const isActive = idx === currentRank;
                 const isDone = idx < currentRank && uploadStage !== 'failed' && uploadStage !== 'cancelled';
@@ -620,7 +805,7 @@ export function UploadWorkspace({
                       isTerminalErr
                         ? 'text-[#DC2626] font-semibold'
                         : isActive
-                          ? 'text-[#2563EB] font-semibold'
+                          ? 'text-[#5B21B6] font-semibold'
                           : isDone
                             ? 'text-[#16A34A]'
                             : 'text-[#64748B]'
@@ -634,35 +819,30 @@ export function UploadWorkspace({
 
             {isUploading && (
               <div>
-                <div className="flex items-center justify-between text-xs text-[#64748B] mb-1.5">
+                <div className="flex items-center justify-between text-xs text-[#52607A] mb-1.5">
                   <span>
-                    {uploadProgress >= 100
-                      ? 'Transfer complete — initializing forensic pipeline on server…'
-                      : `Streaming bytes via XHR${
-                          bytesTransferred
-                            ? ` (${formatBytes(bytesTransferred.loaded)} / ${formatBytes(bytesTransferred.total)})`
-                            : '…'
-                        }`}
+                    Transferring {queue.filter((q) => q.status === 'uploaded').length + 1} of{' '}
+                    {queue.length} independently…
                   </span>
-                  <span className="font-mono tabular-nums font-semibold text-[#172554]">
-                    {uploadProgress}%
+                  <span className="font-mono tabular-nums font-semibold text-[#0F172A]">
+                    {aggregateProgress}%
                   </span>
                 </div>
                 <div className="h-1.5 bg-[#DBEAFE] rounded-full overflow-hidden">
                   <div
                     className="h-full bg-gradient-to-r from-[#2563EB] to-[#7C3AED] transition-all duration-150"
-                    style={{ width: `${uploadProgress}%` }}
+                    style={{ width: `${aggregateProgress}%` }}
                   />
                 </div>
               </div>
             )}
           </div>
 
-          <div className="divide-y divide-[#E5EAF2]">
+          <div className="divide-y divide-[#DCE8F8]/70">
             {queue.map((item) => (
               <div key={item.id} className="p-5 flex flex-col sm:flex-row gap-4 justify-between">
-                <div className="flex items-start gap-4 min-w-0">
-                  <div className="w-16 h-16 rounded-lg border border-[#E5EAF2] bg-[#F5F7FB] overflow-hidden shrink-0 flex items-center justify-center">
+                <div className="flex items-start gap-4 min-w-0 flex-1">
+                  <div className="w-16 h-16 rounded-xl border border-[#DCE8F8] bg-[#EFF6FF]/60 overflow-hidden shrink-0 flex items-center justify-center">
                     {item.previewUrl ? (
                       <img
                         src={item.previewUrl}
@@ -680,22 +860,54 @@ export function UploadWorkspace({
                     )}
                   </div>
 
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold text-[#172554] truncate">
-                      {item.file.name}
-                    </p>
-                    <p className="mt-0.5 text-xs text-[#64748B] font-mono tabular-nums">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5">
+                      <p className="text-sm font-semibold text-[#0F172A] truncate">
+                        {item.file.name}
+                      </p>
+                      {item.status === 'uploaded' && (
+                        <span className="text-xs font-medium text-[#16A34A]">
+                          · Uploaded ({item.analysis?.id})
+                        </span>
+                      )}
+                      {item.status === 'uploading' && (
+                        <span className="text-xs font-mono tabular-nums font-medium text-[#5B21B6]">
+                          · {item.progress >= 100 ? 'Starting pipeline…' : `${item.progress}%`}
+                        </span>
+                      )}
+                      {item.status === 'failed' && (
+                        <span className="text-xs font-medium text-[#DC2626]">· Failed</span>
+                      )}
+                    </div>
+
+                    <p className="mt-0.5 text-xs text-[#52607A] font-mono tabular-nums">
                       {mediaTypeLabel(item.mediaType)} · {formatBytes(item.file.size)} ·{' '}
                       <span className="text-[#16A34A] inline-flex items-center gap-1">
                         <CheckCircle2 className="w-3 h-3" />
                         {item.magicSignatureNote}
                       </span>
                     </p>
+
+                    {item.status === 'uploading' && (
+                      <div className="mt-2 max-w-md">
+                        <div className="h-1 bg-[#DBEAFE] rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-gradient-to-r from-[#2563EB] to-[#7C3AED] transition-all duration-150"
+                            style={{ width: `${item.progress}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {item.error && (
+                      <p className="mt-1.5 text-xs text-[#DC2626] leading-relaxed">{item.error}</p>
+                    )}
+
                     <div className="mt-2.5">
-                      <p className="text-xs font-medium text-[#172554]">
+                      <p className="text-xs font-medium text-[#0F172A]">
                         Selected pipeline methods:
                       </p>
-                      <p className="mt-0.5 text-xs text-[#64748B] leading-relaxed">
+                      <p className="mt-0.5 text-xs text-[#52607A] leading-relaxed">
                         {plannedMethodsForType(item.mediaType).join(' · ')}
                       </p>
                     </div>
@@ -705,7 +917,7 @@ export function UploadWorkspace({
                 <div className="shrink-0">
                   <button
                     type="button"
-                    disabled={isUploading}
+                    disabled={isUploading || item.status === 'uploaded'}
                     onClick={() => removeFile(item.id)}
                     className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-[#64748B] hover:text-[#DC2626] hover:bg-[#FEF2F2] rounded-lg transition-colors cursor-pointer disabled:opacity-40"
                   >
@@ -738,7 +950,7 @@ export function UploadWorkspace({
             type="button"
             disabled={runningSample || isUploading}
             onClick={() => onRunSample('image')}
-            className="group text-left p-4 rounded-xl border border-[#DCE8F8] bg-white/75 hover:bg-white hover:border-[#A78BFA]/70 hover:-translate-y-0.5 hover:shadow-[0_12px_28px_-12px_rgba(124,58,237,0.18)] transition-all duration-250 ease-[cubic-bezier(0.22,1,0.36,1)] cursor-pointer disabled:opacity-50"
+            className="group text-left p-4 rounded-xl border border-[#DCE8F8] bg-white/80 hover:bg-white hover:border-[#A78BFA]/70 hover:-translate-y-0.5 hover:shadow-[0_12px_28px_-12px_rgba(124,58,237,0.18)] transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] cursor-pointer disabled:opacity-50"
           >
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
@@ -760,7 +972,7 @@ export function UploadWorkspace({
             type="button"
             disabled={runningSample || isUploading}
             onClick={() => onRunSample('document')}
-            className="group text-left p-4 rounded-xl border border-[#DCE8F8] bg-white/75 hover:bg-white hover:border-[#A78BFA]/70 hover:-translate-y-0.5 hover:shadow-[0_12px_28px_-12px_rgba(124,58,237,0.18)] transition-all duration-250 ease-[cubic-bezier(0.22,1,0.36,1)] cursor-pointer disabled:opacity-50"
+            className="group text-left p-4 rounded-xl border border-[#DCE8F8] bg-white/80 hover:bg-white hover:border-[#A78BFA]/70 hover:-translate-y-0.5 hover:shadow-[0_12px_28px_-12px_rgba(124,58,237,0.18)] transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] cursor-pointer disabled:opacity-50"
           >
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">

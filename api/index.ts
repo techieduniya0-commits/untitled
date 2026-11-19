@@ -1,3 +1,4 @@
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createApiApp } from '../services/app.ts';
 
 // Disable automatic body parsing so multer can stream multipart/form-data file uploads directly
@@ -9,4 +10,6 @@ export const config = {
 
 const app = createApiApp();
 
-export default app;
+export default function handler(req: IncomingMessage, res: ServerResponse) {
+  return app(req as Parameters<typeof app>[0], res as Parameters<typeof app>[1]);
+}

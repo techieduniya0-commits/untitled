@@ -302,16 +302,18 @@ export async function getAnalysisById(id: string): Promise<AnalysisRecord | null
   if (deletedAnalysisIds.has(id)) return null;
   if (analysesCache) {
     const cached = analysesCache.find((item) => item.id === id);
-    if (cached) return cached;
+    if (cached) return structuredClone(cached);
   }
   const list = await listAnalyses();
-  return list.find((item) => item.id === id) ?? null;
+  const found = list.find((item) => item.id === id) ?? null;
+  return found ? structuredClone(found) : null;
 }
 
 export async function upsertAnalysis(record: AnalysisRecord): Promise<AnalysisRecord> {
+  const snapshot = structuredClone(record);
   return serializedWrite(async () => {
-    if (deletedAnalysisIds.has(record.id)) {
-      return record;
+    if (deletedAnalysisIds.has(snapshot.id)) {
+      return snapshot;
     }
     await ensureStorageReady();
     const diskList = await readJsonSafe<AnalysisRecord[] | null>(ANALYSES_FILE, null);
@@ -320,15 +322,15 @@ export async function upsertAnalysis(record: AnalysisRecord): Promise<AnalysisRe
       : analysesCache
         ? [...analysesCache]
         : [];
-    const idx = list.findIndex((item) => item.id === record.id);
+    const idx = list.findIndex((item) => item.id === snapshot.id);
     if (idx >= 0) {
-      list[idx] = record;
+      list[idx] = snapshot;
     } else {
-      list.unshift(record);
+      list.unshift(snapshot);
     }
-    analysesCache = [...list];
+    analysesCache = list.map((item) => structuredClone(item));
     await atomicWriteJson(ANALYSES_FILE, list);
-    return record;
+    return snapshot;
   });
 }
 

@@ -36,6 +36,13 @@ export class PipelineRetryError extends Error {
   }
 }
 
+/** Tracks actively executing analysis IDs to prevent duplicate concurrent pipeline jobs. */
+const activePipelineRuns = new Set<string>();
+
+export function isPipelineRunning(analysisId: string): boolean {
+  return activePipelineRuns.has(analysisId);
+}
+
 function createInitialStages(): PipelineStage[] {
   return [
     { id: 'file_validation', label: 'File validation', status: 'pending' },
@@ -96,7 +103,7 @@ export async function createQueuedAnalysis(options: {
   declaredMime: string;
 }): Promise<{ analysis: AnalysisRecord; storedFilePath: string }> {
   const settings = await getSettings();
-  const id = `TL-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+  const id = `TL-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
   const analysisDir = path.join(UPLOADS_DIR, id);
   await fs.mkdir(analysisDir, { recursive: true });
 
@@ -143,6 +150,23 @@ export async function createQueuedAnalysis(options: {
 }
 
 export async function executeForensicPipeline(
+  analysis: AnalysisRecord,
+  storedFilePath: string,
+  options?: { reuseVideoPreprocessing?: boolean },
+): Promise<void> {
+  if (activePipelineRuns.has(analysis.id)) {
+    return;
+  }
+  activePipelineRuns.add(analysis.id);
+
+  try {
+    await runPipelineInternal(analysis, storedFilePath, options);
+  } finally {
+    activePipelineRuns.delete(analysis.id);
+  }
+}
+
+async function runPipelineInternal(
   analysis: AnalysisRecord,
   storedFilePath: string,
   options?: { reuseVideoPreprocessing?: boolean },
@@ -508,12 +532,15 @@ export async function executeForensicPipeline(
   }
 }
 
-export async function retryAnalysisPipeline(analysisId: string): Promise<AnalysisRecord> {
+export async function retryAnalysisPipeline(
+  analysisId: string,
+  options?: { awaitCompletion?: boolean },
+): Promise<AnalysisRecord> {
   const record = await getAnalysisById(analysisId);
   if (!record) {
     throw new PipelineRetryError(404, 'NOT_FOUND', 'Analysis record not found.');
   }
-  if (record.status === 'processing') {
+  if (record.status === 'processing' || activePipelineRuns.has(record.id)) {
     throw new PipelineRetryError(409, 'ALREADY_PROCESSING', 'This analysis is already running.');
   }
 
@@ -560,9 +587,15 @@ export async function retryAnalysisPipeline(analysisId: string): Promise<Analysi
   }
 
   await upsertAnalysis(record);
-  void executeForensicPipeline(record, originalPath, {
+  const pipelinePromise = executeForensicPipeline(record, originalPath, {
     reuseVideoPreprocessing: canReuseVideoFrames,
   });
 
+  if (options?.awaitCompletion) {
+    await pipelinePromise;
+    return (await getAnalysisById(record.id)) ?? record;
+  }
+
+  void pipelinePromise;
   return record;
 }

@@ -8,13 +8,24 @@
       "includeFiles": "src/assets/images/**"
     }
   },
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, no-cache, must-revalidate"
+        }
+      ]
+    }
+  ],
   "rewrites": [
     {
       "source": "/api/(.*)",
       "destination": "/api/index?__vercel_path=$1"
     },
     {
-      "source": "/((?!api/|assets/|.*\\..*).*)",
+      "source": "/((?!api(?:/|$)|assets/|.*\\..*).*)",
       "destination": "/index.html"
     }
   ]

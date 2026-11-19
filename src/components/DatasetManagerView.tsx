@@ -14,6 +14,7 @@ import type {
   DatasetValidationSummary,
   GroundTruthLabel,
 } from '../types/forensics';
+import { ApiRequestError, apiRequest } from '../lib/api';
 
 const SPLIT_TABS: Array<{ id: 'all' | DatasetSplit; label: string }> = [
   { id: 'all', label: 'All splits' },
@@ -80,11 +81,10 @@ export function DatasetManagerView() {
 
   const loadEvaluation = async (threshold = evalThreshold) => {
     try {
-      const res = await fetch(`/api/datasets/evaluate?threshold=${encodeURIComponent(String(threshold))}`);
-      if (res.ok) {
-        const data = await res.json();
-        setEvaluation(data.evaluation ?? null);
-      }
+      const { data } = await apiRequest<{ evaluation?: BenchmarkEvaluationReport | null }>(
+        `/api/datasets/evaluate?threshold=${encodeURIComponent(String(threshold))}`,
+      );
+      setEvaluation(data.evaluation ?? null);
     } catch {
       // Non-blocking
     }
@@ -92,20 +92,25 @@ export function DatasetManagerView() {
 
   const loadDatasets = async (threshold = evalThreshold) => {
     setLoading(true);
+    setErrorMessage(null);
     try {
       const [dsRes, evRes] = await Promise.all([
-        fetch('/api/datasets'),
-        fetch(`/api/datasets/evaluate?threshold=${encodeURIComponent(String(threshold))}`),
+        apiRequest<{ records?: DatasetRecord[]; validation?: DatasetValidationSummary | null }>(
+          '/api/datasets',
+        ),
+        apiRequest<{ evaluation?: BenchmarkEvaluationReport | null }>(
+          `/api/datasets/evaluate?threshold=${encodeURIComponent(String(threshold))}`,
+        ).catch(() => ({ status: 200, data: { evaluation: null } })),
       ]);
-      const data = await dsRes.json();
-      setRecords(data.records ?? []);
-      setValidation(data.validation ?? null);
-      if (evRes.ok) {
-        const evData = await evRes.json();
-        setEvaluation(evData.evaluation ?? null);
-      }
-    } catch {
-      setErrorMessage('Failed to load dataset records from server.');
+      setRecords(dsRes.data.records ?? []);
+      setValidation(dsRes.data.validation ?? null);
+      setEvaluation(evRes.data.evaluation ?? null);
+    } catch (err) {
+      setErrorMessage(
+        err instanceof ApiRequestError
+          ? err.message
+          : 'Failed to load dataset records from server.',
+      );
     } finally {
       setLoading(false);
     }
@@ -134,19 +139,19 @@ export function DatasetManagerView() {
     setStatusMessage(null);
     try {
       const csvText = await file.text();
-      const res = await fetch('/api/datasets/import', {
+      const { data } = await apiRequest<{
+        records?: DatasetRecord[];
+        validation?: DatasetValidationSummary | null;
+        importedCount?: number;
+        skippedDuplicateIds?: string[];
+        blockedLeakageIds?: string[];
+      }>('/api/datasets/import', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv: csvText }),
+        body: { csv: csvText },
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setErrorMessage(data.error || 'CSV import failed.');
-        return;
-      }
       setRecords(data.records ?? []);
       setValidation(data.validation ?? null);
-      const parts = [`Imported ${data.importedCount} record(s).`];
+      const parts = [`Imported ${data.importedCount ?? 0} record(s).`];
       if (data.skippedDuplicateIds?.length) {
         parts.push(`Skipped ${data.skippedDuplicateIds.length} duplicate sample ID(s).`);
       }
@@ -157,8 +162,10 @@ export function DatasetManagerView() {
       }
       setStatusMessage(parts.join(' '));
       void loadEvaluation(evalThreshold);
-    } catch {
-      setErrorMessage('Error reading or uploading CSV file.');
+    } catch (err) {
+      setErrorMessage(
+        err instanceof ApiRequestError ? err.message : 'Error reading or uploading CSV file.',
+      );
     }
   };
 
@@ -174,63 +181,71 @@ export function DatasetManagerView() {
       newRec.predicted_score.trim() !== '' && Number.isFinite(Number(newRec.predicted_score))
         ? Math.max(0, Math.min(100, Math.round(Number(newRec.predicted_score))))
         : null;
-    const res = await fetch('/api/datasets', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...newRec,
-        predicted_score: parsedScore,
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      setErrorMessage(data.error || 'Could not save dataset record.');
-      return;
+    try {
+      const { data } = await apiRequest<{ record: DatasetRecord }>('/api/datasets', {
+        method: 'POST',
+        body: {
+          ...newRec,
+          predicted_score: parsedScore,
+        },
+      });
+      setShowAddForm(false);
+      setNewRec({
+        sample_id: '',
+        file_name: '',
+        media_type: 'video',
+        ground_truth_label: 'REAL',
+        split: 'test',
+        generation_platform: '',
+        recording_condition: 'Smartphone Human Video',
+        predicted_score: '',
+        visible_watermark: false,
+        watermark_text: '',
+        metadata_present: true,
+        license: '',
+        consent_status: '',
+        file_hash: '',
+        notes: '',
+      });
+      setStatusMessage(`Saved dataset sample ${data.record.sample_id}.`);
+      await loadDatasets(evalThreshold);
+    } catch (err) {
+      setErrorMessage(
+        err instanceof ApiRequestError ? err.message : 'Could not save dataset record.',
+      );
     }
-    setShowAddForm(false);
-    setNewRec({
-      sample_id: '',
-      file_name: '',
-      media_type: 'video',
-      ground_truth_label: 'REAL',
-      split: 'test',
-      generation_platform: '',
-      recording_condition: 'Smartphone Human Video',
-      predicted_score: '',
-      visible_watermark: false,
-      watermark_text: '',
-      metadata_present: true,
-      license: '',
-      consent_status: '',
-      file_hash: '',
-      notes: '',
-    });
-    setStatusMessage(`Saved dataset sample ${data.record.sample_id}.`);
-    await loadDatasets(evalThreshold);
   };
 
   const handleInlineLabelUpdate = async (rec: DatasetRecord, nextLabel: GroundTruthLabel) => {
     setErrorMessage(null);
-    const res = await fetch('/api/datasets', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...rec,
-        ground_truth_label: nextLabel,
-        is_illustrative_seed: false,
-      }),
-    });
-    if (res.ok) {
+    try {
+      await apiRequest('/api/datasets', {
+        method: 'POST',
+        body: {
+          ...rec,
+          ground_truth_label: nextLabel,
+          is_illustrative_seed: false,
+        },
+      });
       await loadDatasets(evalThreshold);
+    } catch (err) {
+      setErrorMessage(
+        err instanceof ApiRequestError ? err.message : 'Failed to update dataset label.',
+      );
     }
   };
 
   const handleDeleteRecord = async (sampleId: string) => {
-    const res = await fetch(`/api/datasets/${encodeURIComponent(sampleId)}`, {
-      method: 'DELETE',
-    });
-    if (res.ok) {
+    setErrorMessage(null);
+    try {
+      await apiRequest(`/api/datasets/${encodeURIComponent(sampleId)}`, {
+        method: 'DELETE',
+      });
       await loadDatasets(evalThreshold);
+    } catch (err) {
+      setErrorMessage(
+        err instanceof ApiRequestError ? err.message : 'Failed to delete dataset row.',
+      );
     }
   };
 

@@ -1,5 +1,779 @@
 [
   {
+    "id": "TL-MWNY3ZF9-7654",
+    "fileName": "burger.jpeg",
+    "mediaType": "image",
+    "uploadDate": "2026-11-19T19:30:59.735Z",
+    "fileHash": "3b0bbd2e7f42e00f4a17d46439b8bbcef5b51489b52bcfd61ff2fe736a4556a3",
+    "fileSizeBytes": 58823,
+    "mimeType": "image/jpeg",
+    "status": "completed",
+    "stages": [
+      {
+        "id": "file_validation",
+        "label": "File validation",
+        "status": "completed",
+        "startedAt": "2026-11-19T19:30:59.747Z",
+        "completedAt": "2026-11-19T19:30:59.780Z",
+        "detail": "Verified IMAGE (image/jpeg) · SHA-256 3b0bbd2e7f42…"
+      },
+      {
+        "id": "metadata_extraction",
+        "label": "Metadata extraction",
+        "status": "completed",
+        "startedAt": "2026-11-19T19:30:59.786Z",
+        "completedAt": "2026-11-19T19:30:59.799Z",
+        "detail": "Metadata present: Yes · C2PA status: absent."
+      },
+      {
+        "id": "media_preprocessing",
+        "label": "Media preprocessing",
+        "status": "completed",
+        "startedAt": "2026-11-19T19:30:59.806Z",
+        "completedAt": "2026-11-19T19:30:59.813Z",
+        "detail": "Media preprocessed safely in isolated working buffer."
+      },
+      {
+        "id": "method_selection",
+        "label": "Detection method selection",
+        "status": "completed",
+        "startedAt": "2026-11-19T19:30:59.818Z",
+        "completedAt": "2026-11-19T19:30:59.824Z",
+        "detail": "Selected 12-method Image Forensics Pipeline (pixel entropy, Laplacian noise residual, ELA, frequency energy, visible watermark & OCR, lighting/texture/compositing, EXIF, C2PA; SynthID reported unavailable)."
+      },
+      {
+        "id": "forensic_analysis",
+        "label": "Forensic analysis",
+        "status": "warning",
+        "startedAt": "2026-11-19T19:30:59.830Z",
+        "completedAt": "2026-11-19T19:31:17.020Z",
+        "detail": "11 completed; 3 unavailable method(s) explicitly disclosed."
+      },
+      {
+        "id": "ai_assessment",
+        "label": "AI-model assessment",
+        "status": "completed",
+        "startedAt": "2026-11-19T19:31:07.730Z",
+        "completedAt": "2026-11-19T19:31:17.027Z",
+        "detail": "Structured Gemini multimodal forensic reasoning completed (gemini-3.1-flash-lite)."
+      },
+      {
+        "id": "evidence_aggregation",
+        "label": "Evidence aggregation",
+        "status": "completed",
+        "startedAt": "2026-11-19T19:31:17.034Z",
+        "completedAt": "2026-11-19T19:31:17.045Z",
+        "detail": "Score 76/100 (Experimental) · Evidence strength: Moderate · Likely AI-generated."
+      },
+      {
+        "id": "report_generation",
+        "label": "Report generation",
+        "status": "completed",
+        "startedAt": "2026-11-19T19:31:17.050Z",
+        "completedAt": "2026-11-19T19:31:26.163Z",
+        "detail": "Forensic report compiled and persisted."
+      }
+    ],
+    "mediaRetained": true,
+    "mediaExpiresAt": "2026-11-20T19:30:59.735Z",
+    "previewUrl": "/api/analyses/TL-MWNY3ZF9-7654/media",
+    "detectors": [
+      {
+        "id": "ai_image_classification",
+        "methodName": "AI-Generated Image Classification",
+        "category": "ai_reasoning",
+        "status": "completed",
+        "ran": true,
+        "resultSummary": "The image exhibits high-confidence characteristics of AI-generated vector-style illustration rather than a photograph or hand-drawn digital art.",
+        "rawSignalScore": 85,
+        "reliability": "Experimental",
+        "reliabilityWeight": 0.48,
+        "calibrationStatus": "Uncalibrated (Experimental)",
+        "applicability": "Full-frame multimodal visual inspection",
+        "evidenceStrength": "Moderate",
+        "evidence": [
+          "Perfectly consistent line weights and uniform stylistic stroke application characteristic of latent diffusion models trained on clip-art datasets.",
+          "Geometric simplification of complex organic textures (e.g., lettuce and meat patty) into stylized shapes.",
+          "Lack of authentic photographic noise patterns or lens-specific chromatic aberration.",
+          "High-frequency edge sharpness suggesting synthetic generation rather than photographic capture."
+        ],
+        "limitations": [
+          "Multimodal LLM inspection is not a calibrated trained binary classifier; anatomical details (hands/eyes) alone never establish AI generation."
+        ],
+        "toolUsed": "Gemini Multimodal Visual Forensics (gemini-3.1-flash-lite)",
+        "correlationGroup": "visual_ai_assessment",
+        "durationMs": 9290,
+        "detectorVersion": "2.1"
+      },
+      {
+        "id": "pixel_level_forensics",
+        "methodName": "Pixel-Level Forensic Analysis",
+        "category": "signal",
+        "status": "completed",
+        "ran": true,
+        "resultSummary": "RGB Shannon entropy R=4.406, G=4.764, B=4.794 (mean 4.655 bits/channel). Unusually low channel entropy (smooth tonal distribution; common in illustrations, screenshots, or synthetic renders).",
+        "rawSignalScore": null,
+        "reliability": "Low",
+        "reliabilityWeight": 0.3,
+        "calibrationStatus": "Deterministic Check",
+        "applicability": "Raw decoded RGB pixel matrix",
+        "evidenceStrength": "Low",
+        "evidence": [
+          "Decoded normalized working matrix; measured RGB Shannon entropy (4.406 / 4.764 / 4.794).",
+          "Measured edge density: 18.6% of interior pixels exceed Sobel gradient threshold."
+        ],
+        "limitations": [
+          "Basic pixel statistics alone cannot reliably distinguish modern AI-generated images from authentic photographs."
+        ],
+        "toolUsed": "sharp Raw RGBA Pixel Analyzer",
+        "correlationGroup": "pixel_signal_metrics",
+        "durationMs": 137,
+        "detectorVersion": "2.0"
+      },
+      {
+        "id": "noise_residual_analysis",
+        "methodName": "Noise Residual & Resampling / Double-JPEG Analysis",
+        "category": "signal",
+        "status": "completed",
+        "ran": true,
+        "resultSummary": "Laplacian noise variance 1287.85; cross-quadrant spread 23.7%; ELA Q90 mean 1.764 (Q90/Q75 delta 0.86).",
+        "rawSignalScore": null,
+        "reliability": "Low",
+        "reliabilityWeight": 0.4,
+        "calibrationStatus": "Uncalibrated (Experimental)",
+        "applicability": "High-pass 3×3 Laplacian residual and multi-quality JPEG quantization delta",
+        "evidenceStrength": "Low",
+        "evidence": [
+          "Global Laplacian residual variance: 1287.85 (index 35.89).",
+          "Spatial quadrant noise spread ratio: 23.7%.",
+          "Multi-quality recompression delta (Q90 mean 1.764, peak 43, Q90/Q75 delta 0.86)."
+        ],
+        "limitations": [
+          "Camera denoising, shallow depth-of-field, and platform re-encoding alter noise residuals and quantization curves substantially."
+        ],
+        "toolUsed": "TruthLens Laplacian & Multi-Quality ELA Engine (sharp)",
+        "correlationGroup": "pixel_signal_metrics",
+        "durationMs": 137,
+        "detectorVersion": "2.0"
+      },
+      {
+        "id": "frequency_domain_analysis",
+        "methodName": "Frequency-Domain & High-Frequency Energy Analysis",
+        "category": "signal",
+        "status": "partially_implemented",
+        "ran": true,
+        "resultSummary": "Spatial high-pass residual energy ratio measured at 0.0697 (edge density 18.6%). Full 2D FFT spectral classifier not installed.",
+        "rawSignalScore": null,
+        "reliability": "Low",
+        "reliabilityWeight": 0.45,
+        "calibrationStatus": "Uncalibrated (Experimental)",
+        "applicability": "Spatial high-pass energy approximation",
+        "evidenceStrength": "Low",
+        "evidence": [
+          "High-frequency-to-luminance energy ratio: 0.0697.",
+          "Marked PARTIALLY_IMPLEMENTED because a dedicated 2D FFT azimuthal power-spectrum classifier requires calibrated spectral training weights not deployed in this runtime."
+        ],
+        "limitations": [
+          "Resizing, sharpening filters, and JPEG/WEBP compression heavily mask high-frequency synthesis signatures."
+        ],
+        "toolUsed": "TruthLens Spatial High-Pass Estimator",
+        "correlationGroup": "pixel_signal_metrics",
+        "durationMs": 137,
+        "detectorVersion": "2.0"
+      },
+      {
+        "id": "prnu_sensor_fingerprint",
+        "methodName": "PRNU Camera Sensor Fingerprinting",
+        "category": "signal",
+        "status": "unavailable",
+        "ran": false,
+        "resultSummary": "Not performed — PRNU sensor noise correlation requires reference images captured by the claimed source camera.",
+        "rawSignalScore": null,
+        "reliability": "Moderate",
+        "reliabilityWeight": 0.6,
+        "calibrationStatus": "Deterministic Check",
+        "applicability": "Requires >=20 flat-field reference photos from the alleged camera sensor",
+        "evidenceStrength": "Low",
+        "evidence": [
+          "No reference camera sensor fingerprint corpus was supplied for comparison."
+        ],
+        "limitations": [
+          "Single-image PRNU cannot verify camera authenticity without reference capture baselines."
+        ],
+        "toolUsed": "Unavailable (requires camera reference set)",
+        "correlationGroup": "pixel_signal_metrics",
+        "durationMs": 0,
+        "detectorVersion": "2.0"
+      },
+      {
+        "id": "copy_move_sift_ransac",
+        "methodName": "Copy-Move Forgery Detection (SIFT + RANSAC)",
+        "category": "visual",
+        "status": "unavailable",
+        "ran": false,
+        "resultSummary": "Not performed — geometric SIFT keypoint matching + RANSAC bounding-box verification requires native OpenCV bindings not installed in this runtime.",
+        "rawSignalScore": null,
+        "reliability": "Moderate",
+        "reliabilityWeight": 0.55,
+        "calibrationStatus": "Deterministic Check",
+        "applicability": "Cloned region detection in edited photographs",
+        "evidenceStrength": "Low",
+        "evidence": [
+          "OpenCV SIFT/RANSAC native module is not installed in this Node.js environment."
+        ],
+        "limitations": [
+          "Visual compositing checks are performed separately via ELA and multimodal inspection."
+        ],
+        "toolUsed": "Not integrated (OpenCV SIFT unavailable)",
+        "correlationGroup": "compositing_manipulation",
+        "durationMs": 0,
+        "detectorVersion": "2.0"
+      },
+      {
+        "id": "texture_pattern_analysis",
+        "methodName": "Texture & Micro-Pattern Inspection",
+        "category": "visual",
+        "status": "completed",
+        "ran": true,
+        "resultSummary": "The textures are synthetic and highly repetitive, characteristic of digital illustration tools and generative modeling.",
+        "rawSignalScore": 90,
+        "reliability": "Experimental",
+        "reliabilityWeight": 0.45,
+        "calibrationStatus": "Uncalibrated (Experimental)",
+        "applicability": "Surface micro-textures, foliage, fabrics, skin, and repeating structures",
+        "evidenceStrength": "Moderate",
+        "evidence": [
+          "Uniformity in seed placement on the bun.",
+          "Simplified, repeating leaf patterns on the lettuce.",
+          "Consistent, stylized highlighting on every surface component."
+        ],
+        "limitations": [
+          "Modern photographic noise reduction and HDR merging can mimic synthetic smoothness."
+        ],
+        "toolUsed": "Gemini Multimodal Inspection (gemini-3.1-flash-lite)",
+        "correlationGroup": "visual_ai_assessment",
+        "durationMs": 9290,
+        "detectorVersion": "2.1"
+      },
+      {
+        "id": "lighting_shadow_inspection",
+        "methodName": "Lighting, Reflection & Shadow Consistency",
+        "category": "visual",
+        "status": "completed",
+        "ran": true,
+        "resultSummary": "The lighting is stylized and artificial, consistent with global illumination rendered by AI models to create a 'flat' aesthetic.",
+        "rawSignalScore": 75,
+        "reliability": "Experimental",
+        "reliabilityWeight": 0.45,
+        "calibrationStatus": "Uncalibrated (Experimental)",
+        "applicability": "Light directionality, cast shadows, specular highlights, and reflections",
+        "evidenceStrength": "Moderate",
+        "evidence": [
+          "Shadow beneath the bun is a generic, uniform ellipse, lacking contact shadows or interaction with the bottom bun surface.",
+          "Highlights on the cheese and tomato lack physical accuracy relative to a single point light source."
+        ],
+        "limitations": [
+          "Complex multi-source studio lighting or overcast diffused light can produce subtle shadow geometries."
+        ],
+        "toolUsed": "Gemini Multimodal Inspection (gemini-3.1-flash-lite)",
+        "correlationGroup": "visual_physics_check",
+        "durationMs": 9290,
+        "detectorVersion": "2.1"
+      },
+      {
+        "id": "metadata_extraction_check",
+        "methodName": "Image Metadata & EXIF Inspection",
+        "category": "metadata",
+        "status": "completed",
+        "ran": true,
+        "resultSummary": "No camera EXIF hardware identifiers found. EXIF metadata is entirely absent, suggesting the file was exported from a generative platform or processed by an image-editing tool that stripped original metadata.",
+        "rawSignalScore": null,
+        "reliability": "Low",
+        "reliabilityWeight": 0.3,
+        "calibrationStatus": "Deterministic Check",
+        "applicability": "EXIF, XMP, IPTC, ICC, and container tags",
+        "evidenceStrength": "Low",
+        "evidence": [
+          "Metadata present: Yes (6 parsed EXIF/XMP fields).",
+          "Camera Make/Model: Not present / Not present.",
+          "Software tag: Not present.",
+          "ICC Profile: Not present."
+        ],
+        "limitations": [
+          "Metadata can be freely edited, stripped by social media/messaging platforms, or forged.",
+          "Missing metadata never proves AI generation."
+        ],
+        "toolUsed": "exifr + sharp Metadata Parser",
+        "correlationGroup": "metadata_context",
+        "durationMs": 137,
+        "detectorVersion": "2.1"
+      },
+      {
+        "id": "visible_watermark_detection",
+        "methodName": "Visible Watermark & Generator Branding Detection",
+        "category": "watermark",
+        "status": "completed",
+        "ran": true,
+        "resultSummary": "No visible AI-generator watermarks or platform marks were observed across full frames and edge strips (absence does not prove authenticity).",
+        "rawSignalScore": null,
+        "reliability": "Moderate",
+        "reliabilityWeight": 0.85,
+        "calibrationStatus": "Deterministic Check",
+        "applicability": "Full-frame + top/bottom edge-strip OCR & logo scan across 1 frame(s)",
+        "evidenceStrength": "Low",
+        "evidence": [
+          "Inspected full image plus zoomed top and bottom margin strips: no visible AI platform text or logos detected."
+        ],
+        "limitations": [
+          "Visible watermarks can be cropped out, blurred, or added artificially to non-AI content.",
+          "Absence of a visible watermark never proves content is authentic.",
+          "Recognizing a logo or text suggests possible platform association rather than cryptographic proof."
+        ],
+        "toolUsed": "TruthLens Edge-Strip Watermark Scanner (gemini-3.1-flash-lite)",
+        "correlationGroup": "visible_watermark",
+        "durationMs": 7755,
+        "detectorVersion": "2.1"
+      },
+      {
+        "id": "ocr_text_recognition",
+        "methodName": "OCR Text Recognition",
+        "category": "watermark",
+        "status": "completed",
+        "ran": true,
+        "resultSummary": "No legible embedded or overlaid text detected.",
+        "rawSignalScore": null,
+        "reliability": "Moderate",
+        "reliabilityWeight": 0.55,
+        "calibrationStatus": "Deterministic Check",
+        "applicability": "Text extraction across 1 frame(s)",
+        "evidenceStrength": "Low",
+        "evidence": [
+          "No readable signage, captions, or text overlays observed in inspected frames."
+        ],
+        "limitations": [
+          "Small, heavily compressed, or motion-blurred text may not be readable."
+        ],
+        "toolUsed": "Multimodal OCR (gemini-3.1-flash-lite)",
+        "correlationGroup": "ocr_text",
+        "durationMs": 7755,
+        "detectorVersion": "2.1"
+      },
+      {
+        "id": "image_manipulation_compositing",
+        "methodName": "Manipulation, Boundary & Compositing Indicators",
+        "category": "visual",
+        "status": "completed",
+        "ran": true,
+        "resultSummary": "The image appears to be a singular generated composition rather than a manipulated photograph.",
+        "rawSignalScore": 60,
+        "reliability": "Experimental",
+        "reliabilityWeight": 0.48,
+        "calibrationStatus": "Uncalibrated (Experimental)",
+        "applicability": "Boundary blending, splicing, and ELA consistency",
+        "evidenceStrength": "Moderate",
+        "evidence": [
+          "No evidence of compositing seams, transparency errors, or scale inconsistencies common in human-led digital manipulation.",
+          "Cohesion of style suggests simultaneous generation."
+        ],
+        "limitations": [
+          "Subtle retouching or global color grading may not leave visible compositing seams."
+        ],
+        "toolUsed": "ELA + Gemini Multimodal Inspection (gemini-3.1-flash-lite)",
+        "correlationGroup": "compositing_manipulation",
+        "durationMs": 9290,
+        "detectorVersion": "2.1"
+      },
+      {
+        "id": "c2pa_provenance",
+        "methodName": "C2PA Provenance Inspection",
+        "category": "provenance",
+        "status": "completed",
+        "ran": true,
+        "resultSummary": "No C2PA provenance manifest found.",
+        "rawSignalScore": null,
+        "reliability": "Moderate",
+        "calibrationStatus": "Deterministic Check",
+        "applicability": "Container signature scan for image files",
+        "evidenceStrength": "Low",
+        "evidence": [
+          "Scanned header and trailer binary segments for JUMBF (jumb) and c2pa.claim markers: none found.",
+          "Absence of C2PA credentials is common across authentic consumer cameras, social media re-uploads, and unauthenticated AI outputs."
+        ],
+        "limitations": [
+          "Full X.509 cryptographic signature validation against the C2PA Trust List requires c2patool/c2pa-rs, which is not installed in this environment.",
+          "Social media platforms, messaging apps, and re-encoding routinely strip valid C2PA manifests from both real and AI media.",
+          "Absence of C2PA metadata never proves a file is AI-generated."
+        ],
+        "toolUsed": "TruthLens Binary JUMBF / XMP Manifest Scanner",
+        "correlationGroup": "provenance_manifest"
+      },
+      {
+        "id": "synthid_verification",
+        "methodName": "SynthID Invisible Watermark Verification",
+        "category": "watermark",
+        "status": "unavailable",
+        "ran": false,
+        "resultSummary": "Not performed — no supported SynthID cryptographic detector is integrated in this runtime.",
+        "rawSignalScore": null,
+        "reliability": "High",
+        "calibrationStatus": "Deterministic Check",
+        "applicability": "Applicable to image",
+        "evidenceStrength": "Low",
+        "evidence": [
+          "SynthID imperceptible watermark verification requires access to Google DeepMind’s dedicated SynthID verification SDK/API, which is not available in this server runtime."
+        ],
+        "limitations": [
+          "TruthLens never simulates or guesses invisible watermark presence.",
+          "Visible watermark detection is performed separately via OCR and visual logo inspection."
+        ],
+        "toolUsed": "Not integrated (Unavailable)",
+        "correlationGroup": "invisible_watermark"
+      }
+    ],
+    "watermarks": [
+      {
+        "id": "wm_invisible_synthid",
+        "type": "invisible_watermark",
+        "detected": false,
+        "recognizedTextOrLogo": null,
+        "timestamp": null,
+        "positionInFrame": null,
+        "detectionMethod": "SynthID / Imperceptible Watermark Verification",
+        "recognitionConfidence": "Not applicable",
+        "possiblePlatform": null,
+        "note": "Not performed: no supported invisible watermark verification algorithm (such as SynthID) is integrated in this runtime environment."
+      },
+      {
+        "id": "wm_provenance_c2pa",
+        "type": "provenance_marker",
+        "detected": false,
+        "recognizedTextOrLogo": null,
+        "timestamp": null,
+        "positionInFrame": "File container metadata",
+        "detectionMethod": "Binary JUMBF / C2PA / XMP Signature Inspection",
+        "recognitionConfidence": "Low",
+        "possiblePlatform": null,
+        "note": "No C2PA JUMBF manifest or Content Credentials markers were detected in file headers or trailers."
+      }
+    ],
+    "retryCount": 0,
+    "metadata": {
+      "fileName": "burger.jpeg",
+      "declaredMime": "image/jpeg",
+      "detectedMime": "image/jpeg",
+      "extension": ".jpeg",
+      "fileSizeBytes": 58823,
+      "sha256": "3b0bbd2e7f42e00f4a17d46439b8bbcef5b51489b52bcfd61ff2fe736a4556a3",
+      "createdAt": "2026-11-19T19:30:59.734Z",
+      "modifiedAt": "2026-11-19T19:30:59.734Z",
+      "metadataPresent": true,
+      "warnings": [],
+      "c2paStatus": "absent",
+      "c2paDetails": "No C2PA JUMBF manifest or Content Credentials markers were detected in file headers or trailers.",
+      "width": 700,
+      "height": 700,
+      "colorMode": "srgb",
+      "channels": 3,
+      "hasAlpha": false,
+      "iccProfile": null,
+      "exif": {
+        "JFIFVersion": 257,
+        "ResolutionUnit": 1,
+        "XResolution": 72,
+        "YResolution": 72,
+        "ThumbnailWidth": 0,
+        "ThumbnailHeight": 0
+      },
+      "embeddedMetadataKeys": [
+        "JFIFVersion",
+        "ResolutionUnit",
+        "XResolution",
+        "YResolution",
+        "ThumbnailWidth",
+        "ThumbnailHeight"
+      ],
+      "cameraMake": null,
+      "cameraModel": null,
+      "software": null,
+      "gpsPresent": false,
+      "gpsSummary": "Not present"
+    },
+    "imageVisualMetrics": {
+      "laplacianVariance": 1287.85,
+      "quadrantNoiseSpread": 0.237,
+      "noiseResidualIndex": 35.89,
+      "channelEntropy": {
+        "r": 4.406,
+        "g": 4.764,
+        "b": 4.794
+      },
+      "elaMeanDiff": 1.764,
+      "elaMaxDiff": 43,
+      "doubleCompressionDelta": 0.86,
+      "highFreqEnergyRatio": 0.0697,
+      "edgeDensity": 0.1861,
+      "aspectRatio": "1:1 (700×700)",
+      "ocrExtractedText": [],
+      "suspiciousRegions": [
+        {
+          "label": "Cheese corners",
+          "region": "Center-left to right",
+          "observation": "Geometric corners are unnaturally sharp and uniform for the texture of a slice of cheese."
+        },
+        {
+          "label": "Shadow base",
+          "region": "Bottom edge",
+          "observation": "Elliptical shadow is generic and mathematically perfect, lacking natural variance."
+        }
+      ]
+    },
+    "geminiStatus": "completed",
+    "geminiModelUsed": "gemini-3.1-flash-lite",
+    "geminiFailureDetail": null,
+    "scoring": {
+      "aiLikelihoodScore": 76,
+      "isExperimental": true,
+      "calibrationLabel": "Experimental AI-Likelihood Estimate",
+      "evidenceStrength": "Moderate",
+      "classification": "Likely AI-generated",
+      "completenessPercent": 79,
+      "overallReliability": "Moderate",
+      "methodsPerformedCount": 11,
+      "methodsUnavailableCount": 3,
+      "methodsFailedCount": 0,
+      "conflictingFindings": [],
+      "disagreementReasons": [],
+      "evidenceSupportingAi": [
+        "[AI-Generated Image Classification · 85/100] The image exhibits high-confidence characteristics of AI-generated vector-style illustration rather than a photograph or hand-drawn digital art.",
+        "[Texture & Micro-Pattern Inspection · 90/100] The textures are synthetic and highly repetitive, characteristic of digital illustration tools and generative modeling.",
+        "[Lighting, Reflection & Shadow Consistency · 75/100] The lighting is stylized and artificial, consistent with global illumination rendered by AI models to create a 'flat' aesthetic.",
+        "[Manipulation, Boundary & Compositing Indicators · 60/100] The image appears to be a singular generated composition rather than a manipulated photograph."
+      ],
+      "evidenceSupportingNaturalCapture": [],
+      "neutralObservations": [
+        "[Pixel-Level Forensic Analysis] RGB Shannon entropy R=4.406, G=4.764, B=4.794 (mean 4.655 bits/channel). Unusually low channel entropy (smooth tonal distribution; common in illustrations, screenshots, or synthetic renders).",
+        "[Noise Residual & Resampling / Double-JPEG Analysis] Laplacian noise variance 1287.85; cross-quadrant spread 23.7%; ELA Q90 mean 1.764 (Q90/Q75 delta 0.86).",
+        "[Frequency-Domain & High-Frequency Energy Analysis] Spatial high-pass residual energy ratio measured at 0.0697 (edge density 18.6%). Full 2D FFT spectral classifier not installed.",
+        "[Image Metadata & EXIF Inspection] No camera EXIF hardware identifiers found. EXIF metadata is entirely absent, suggesting the file was exported from a generative platform or processed by an image-editing tool that stripped original metadata.",
+        "[Visible Watermark & Generator Branding Detection] No visible AI-generator watermarks or platform marks were observed across full frames and edge strips (absence does not prove authenticity).",
+        "[OCR Text Recognition] No legible embedded or overlaid text detected.",
+        "[C2PA Provenance Inspection] No C2PA provenance manifest found."
+      ],
+      "scoreExplanation": [
+        "Pipeline completeness: 79% (11 of 14 applicable detectors ran; 3 unavailable and 0 failed excluded rather than defaulted to zero).",
+        "Aggregated 3 correlation group(s) across 1 signal provider(s) with exponential decay (100% → 50% → 25%) to prevent correlated double-counting.",
+        "Evidence polarity split: 4 AI-supporting indicator(s), 0 natural-capture observation(s), and 7 neutral/informational observation(s).",
+        "Absence of AI watermarks or C2PA metadata is recorded as neutral context only and is never treated as proof of authenticity or AI generation.",
+        "This composite score is an Experimental AI-Likelihood Estimate, not definitive proof of authorship."
+      ],
+      "methodContributions": [
+        {
+          "methodName": "Pixel-Level Forensic Analysis",
+          "rawScore": null,
+          "weightApplied": 0,
+          "correlationGroup": "pixel_signal_metrics",
+          "status": "completed",
+          "reliability": "Low",
+          "signalPolarity": "neutral",
+          "reason": "Neutral/informational forensic telemetry — provides context without inflating AI score."
+        },
+        {
+          "methodName": "Noise Residual & Resampling / Double-JPEG Analysis",
+          "rawScore": null,
+          "weightApplied": 0,
+          "correlationGroup": "pixel_signal_metrics",
+          "status": "completed",
+          "reliability": "Low",
+          "signalPolarity": "neutral",
+          "reason": "Neutral/informational forensic telemetry — provides context without inflating AI score."
+        },
+        {
+          "methodName": "Frequency-Domain & High-Frequency Energy Analysis",
+          "rawScore": null,
+          "weightApplied": 0,
+          "correlationGroup": "pixel_signal_metrics",
+          "status": "partially_implemented",
+          "reliability": "Low",
+          "signalPolarity": "neutral",
+          "reason": "Neutral/informational forensic telemetry — provides context without inflating AI score."
+        },
+        {
+          "methodName": "PRNU Camera Sensor Fingerprinting",
+          "rawScore": null,
+          "weightApplied": 0,
+          "correlationGroup": "pixel_signal_metrics",
+          "status": "unavailable",
+          "reliability": "Moderate",
+          "signalPolarity": "neutral",
+          "reason": "Excluded — detector unavailable in current server runtime."
+        },
+        {
+          "methodName": "Copy-Move Forgery Detection (SIFT + RANSAC)",
+          "rawScore": null,
+          "weightApplied": 0,
+          "correlationGroup": "compositing_manipulation",
+          "status": "unavailable",
+          "reliability": "Moderate",
+          "signalPolarity": "neutral",
+          "reason": "Excluded — detector unavailable in current server runtime."
+        },
+        {
+          "methodName": "Image Metadata & EXIF Inspection",
+          "rawScore": null,
+          "weightApplied": 0,
+          "correlationGroup": "metadata_context",
+          "status": "completed",
+          "reliability": "Low",
+          "signalPolarity": "neutral",
+          "reason": "Neutral/informational forensic telemetry — provides context without inflating AI score."
+        },
+        {
+          "methodName": "Visible Watermark & Generator Branding Detection",
+          "rawScore": null,
+          "weightApplied": 0,
+          "correlationGroup": "visible_watermark",
+          "status": "completed",
+          "reliability": "Moderate",
+          "signalPolarity": "neutral",
+          "reason": "Neutral/informational forensic telemetry — provides context without inflating AI score."
+        },
+        {
+          "methodName": "OCR Text Recognition",
+          "rawScore": null,
+          "weightApplied": 0,
+          "correlationGroup": "ocr_text",
+          "status": "completed",
+          "reliability": "Moderate",
+          "signalPolarity": "neutral",
+          "reason": "Neutral/informational forensic telemetry — provides context without inflating AI score."
+        },
+        {
+          "methodName": "C2PA Provenance Inspection",
+          "rawScore": null,
+          "weightApplied": 0,
+          "correlationGroup": "provenance_manifest",
+          "status": "completed",
+          "reliability": "Moderate",
+          "signalPolarity": "neutral",
+          "reason": "Neutral/informational forensic telemetry — provides context without inflating AI score."
+        },
+        {
+          "methodName": "SynthID Invisible Watermark Verification",
+          "rawScore": null,
+          "weightApplied": 0,
+          "correlationGroup": "invisible_watermark",
+          "status": "unavailable",
+          "reliability": "High",
+          "signalPolarity": "neutral",
+          "reason": "Excluded — detector unavailable in current server runtime."
+        },
+        {
+          "methodName": "AI-Generated Image Classification",
+          "rawScore": 85,
+          "weightApplied": 0.48,
+          "correlationGroup": "visual_ai_assessment",
+          "status": "completed",
+          "reliability": "Experimental",
+          "signalPolarity": "ai_indicator",
+          "reason": "Primary detector in group \"visual_ai_assessment\" (ai indicator, weight 0.48)."
+        },
+        {
+          "methodName": "Texture & Micro-Pattern Inspection",
+          "rawScore": 90,
+          "weightApplied": 0.23,
+          "correlationGroup": "visual_ai_assessment",
+          "status": "completed",
+          "reliability": "Experimental",
+          "signalPolarity": "ai_indicator",
+          "reason": "Correlated member #2 in \"visual_ai_assessment\" — weight decayed (50%) to avoid double-counting."
+        },
+        {
+          "methodName": "Lighting, Reflection & Shadow Consistency",
+          "rawScore": 75,
+          "weightApplied": 0.45,
+          "correlationGroup": "visual_physics_check",
+          "status": "completed",
+          "reliability": "Experimental",
+          "signalPolarity": "ai_indicator",
+          "reason": "Primary detector in group \"visual_physics_check\" (ai indicator, weight 0.45)."
+        },
+        {
+          "methodName": "Manipulation, Boundary & Compositing Indicators",
+          "rawScore": 60,
+          "weightApplied": 0.48,
+          "correlationGroup": "compositing_manipulation",
+          "status": "completed",
+          "reliability": "Experimental",
+          "signalPolarity": "ai_indicator",
+          "reason": "Primary detector in group \"compositing_manipulation\" (ai indicator, weight 0.48)."
+        }
+      ]
+    },
+    "isPartialReport": false,
+    "canRetryGemini": false,
+    "geminiSummary": {
+      "executiveSummary": "The image burger.jpeg exhibits a moderate-to-high likelihood of being AI-generated, with a composite score of 76/100. The analysis identifies strong indicators consistent with synthetic, illustration-style generative models, though no definitive proof of authorship is established.",
+      "observedEvidence": [
+        "[AI-Generated Image Classification] The image exhibits high-confidence characteristics of AI-generated vector-style illustration rather than a photograph or hand-drawn digital art.",
+        "[Pixel-Level Forensic Analysis] RGB Shannon entropy R=4.406, G=4.764, B=4.794 (mean 4.655 bits/channel). Unusually low channel entropy (smooth tonal distribution; common in illustrations, screenshots, or synthetic renders).",
+        "[Noise Residual & Resampling / Double-JPEG Analysis] Laplacian noise variance 1287.85; cross-quadrant spread 23.7%; ELA Q90 mean 1.764 (Q90/Q75 delta 0.86).",
+        "[Frequency-Domain & High-Frequency Energy Analysis] Spatial high-pass residual energy ratio measured at 0.0697 (edge density 18.6%). Full 2D FFT spectral classifier not installed.",
+        "[Texture & Micro-Pattern Inspection] The textures are synthetic and highly repetitive, characteristic of digital illustration tools and generative modeling.",
+        "[Lighting, Reflection & Shadow Consistency] The lighting is stylized and artificial, consistent with global illumination rendered by AI models to create a 'flat' aesthetic.",
+        "[Image Metadata & EXIF Inspection] No camera EXIF hardware identifiers found. EXIF metadata is entirely absent, suggesting the file was exported from a generative platform or processed by an image-editing tool that stripped original metadata.",
+        "[Visible Watermark & Generator Branding Detection] No visible AI-generator watermarks or platform marks were observed across full frames and edge strips (absence does not prove authenticity).",
+        "[OCR Text Recognition] No legible embedded or overlaid text detected.",
+        "[Manipulation, Boundary & Compositing Indicators] The image appears to be a singular generated composition rather than a manipulated photograph.",
+        "[C2PA Provenance Inspection] No C2PA provenance manifest found."
+      ],
+      "aiExplanation": "The scoring reflects consistent stylistic patterns, such as simplified organic textures and artificial lighting, which are common in latent diffusion models. No natural-capture indicators were observed, and the absence of camera metadata is consistent with files exported from generative platforms, though it does not provide conclusive evidence of origin.",
+      "suspiciousIndicators": [
+        "High-confidence vector-style illustration characteristics",
+        "Repetitive, simplified micro-patterns in organic elements like lettuce",
+        "Artificial, stylized lighting lacking physically accurate contact shadows",
+        "Uniformity in seed placement on the bun"
+      ],
+      "evidenceSupportingAi": [
+        "[AI-Generated Image Classification · 85/100] The image exhibits high-confidence characteristics of AI-generated vector-style illustration rather than a photograph or hand-drawn digital art.",
+        "[Texture & Micro-Pattern Inspection · 90/100] The textures are synthetic and highly repetitive, characteristic of digital illustration tools and generative modeling.",
+        "[Lighting, Reflection & Shadow Consistency · 75/100] The lighting is stylized and artificial, consistent with global illumination rendered by AI models to create a 'flat' aesthetic.",
+        "[Manipulation, Boundary & Compositing Indicators · 60/100] The image appears to be a singular generated composition rather than a manipulated photograph."
+      ],
+      "evidenceSupportingNaturalCapture": [],
+      "neutralObservations": [
+        "[Pixel-Level Forensic Analysis] RGB Shannon entropy R=4.406, G=4.764, B=4.794 (mean 4.655 bits/channel). Unusually low channel entropy (smooth tonal distribution; common in illustrations, screenshots, or synthetic renders).",
+        "[Noise Residual & Resampling / Double-JPEG Analysis] Laplacian noise variance 1287.85; cross-quadrant spread 23.7%; ELA Q90 mean 1.764 (Q90/Q75 delta 0.86).",
+        "[Frequency-Domain & High-Frequency Energy Analysis] Spatial high-pass residual energy ratio measured at 0.0697 (edge density 18.6%). Full 2D FFT spectral classifier not installed.",
+        "[Image Metadata & EXIF Inspection] No camera EXIF hardware identifiers found. EXIF metadata is entirely absent, suggesting the file was exported from a generative platform or processed by an image-editing tool that stripped original metadata.",
+        "[Visible Watermark & Generator Branding Detection] No visible AI-generator watermarks or platform marks were observed across full frames and edge strips (absence does not prove authenticity).",
+        "[OCR Text Recognition] No legible embedded or overlaid text detected.",
+        "[C2PA Provenance Inspection] No C2PA provenance manifest found."
+      ],
+      "disagreementReasons": [],
+      "technicalObservations": [
+        "Unusually low RGB Shannon entropy (mean 4.655 bits/channel) consistent with synthetic renders",
+        "Absence of camera hardware EXIF identifiers",
+        "High-pass residual energy ratio measured at 0.0697",
+        "Absence of C2PA provenance manifest"
+      ],
+      "recommendedNextSteps": [
+        "Perform a reverse image search to identify potential source provenance or platform usage",
+        "Check for related imagery with similar stylistic composition",
+        "Review high-resolution source files if available to look for more granular procedural artifacts"
+      ],
+      "confidenceLimitations": [
+        "A detection score is an experimental estimate, not definitive proof of AI generation or human authorship.",
+        "Absence of AI watermarks or C2PA metadata is neutral context and never establishes definitive authenticity.",
+        "The findings are based on experimental detector outputs which do not constitute definitive proof",
+        "The absence of metadata and watermarks is neutral and cannot be interpreted as confirmation of synthetic generation",
+        "Full 2D FFT spectral analysis was not performed, which may limit the depth of frequency-domain verification"
+      ],
+      "modelUsed": "gemini-3.1-flash-lite",
+      "generatedAt": "2026-11-19T19:31:26.163Z"
+    },
+    "completedDate": "2026-11-19T19:31:26.163Z"
+  },
+  {
     "id": "TL-MWNX7HZH-7D81",
     "fileName": "image.jpeg",
     "mediaType": "image",

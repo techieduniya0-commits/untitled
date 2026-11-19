@@ -31,7 +31,15 @@ async function startServer() {
   } else {
     const distDir = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distDir));
-    app.get('*', (_req, res) => {
+    app.get('*', (req, res) => {
+      if (req.path.startsWith('/api')) {
+        res.status(404).json({
+          ok: false,
+          error: 'API endpoint not found.',
+          code: 'API_ROUTE_NOT_FOUND',
+        });
+        return;
+      }
       res.sendFile(path.join(distDir, 'index.html'));
     });
   }

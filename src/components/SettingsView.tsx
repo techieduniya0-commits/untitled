@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
-import { CheckCircle2, Info, Save } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { AlertCircle, CheckCircle2, Info, RefreshCw, Save } from 'lucide-react';
 import type { AppSettings, SystemCapabilities } from '../types/forensics';
+import { ApiRequestError, apiRequest } from '../lib/api';
 
 interface SettingsViewProps {
   onSettingsChanged: (settings: AppSettings) => void;
@@ -11,50 +12,83 @@ export function SettingsView({ onSettingsChanged }: SettingsViewProps) {
   const [capabilities, setCapabilities] = useState<SystemCapabilities | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const loadSettings = useCallback(async () => {
+    setErrorMessage(null);
+    try {
+      const { data } = await apiRequest<{
+        settings: AppSettings;
+        capabilities: SystemCapabilities;
+      }>('/api/settings');
+      setSettings(data.settings);
+      setCapabilities(data.capabilities);
+    } catch (err) {
+      setErrorMessage(
+        err instanceof ApiRequestError
+          ? err.message
+          : 'Failed to load server settings. Please retry.',
+      );
+    }
+  }, []);
 
   useEffect(() => {
-    void (async () => {
-      const res = await fetch('/api/settings');
-      if (res.ok) {
-        const data = await res.json();
-        setSettings(data.settings);
-        setCapabilities(data.capabilities);
-      }
-    })();
-  }, []);
+    void loadSettings();
+  }, [loadSettings]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!settings) return;
     setSaving(true);
     setSavedNotice(false);
+    setErrorMessage(null);
     try {
-      const res = await fetch('/api/settings', {
+      const { data } = await apiRequest<{ settings: AppSettings }>('/api/settings', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: {
           retainOriginalMediaHours: settings.retainOriginalMediaHours,
           videoFrameSampleCount: settings.videoFrameSampleCount,
           maxUploadSizeMb: settings.maxUploadSizeMb,
-        }),
+        },
       });
-      if (res.ok) {
-        const data = await res.json();
-        setSettings(data.settings);
-        onSettingsChanged(data.settings);
-        setSavedNotice(true);
-        setTimeout(() => setSavedNotice(false), 2500);
-      }
+      setSettings(data.settings);
+      onSettingsChanged(data.settings);
+      setSavedNotice(true);
+      setTimeout(() => setSavedNotice(false), 2500);
+    } catch (err) {
+      setErrorMessage(
+        err instanceof ApiRequestError
+          ? err.message
+          : 'Could not save platform settings.',
+      );
     } finally {
       setSaving(false);
     }
   };
 
   if (!settings) {
+    if (errorMessage) {
+      return (
+        <div className="max-w-2xl bg-[#FEF2F2] border border-[#FECACA] rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-2.5 text-xs text-[#991B1B]">
+            <AlertCircle className="w-4 h-4 text-[#DC2626] shrink-0 mt-0.5" />
+            <span>{errorMessage}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadSettings()}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#991B1B] bg-white hover:bg-[#FEE2E2] border border-[#FECACA] rounded-lg cursor-pointer self-start sm:self-auto"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            Retry
+          </button>
+        </div>
+      );
+    }
     return (
       <div className="space-y-4 max-w-3xl">
-        <div className="h-44 bg-white border border-[#E5EAF2] rounded-xl animate-pulse" />
-        <div className="h-56 bg-white border border-[#E5EAF2] rounded-xl animate-pulse" />
+        <div className="h-44 bg-white/80 border border-[#DCE8F8] rounded-xl animate-pulse" />
+        <div className="h-56 bg-white/80 border border-[#DCE8F8] rounded-xl animate-pulse" />
       </div>
     );
   }
@@ -149,12 +183,18 @@ export function SettingsView({ onSettingsChanged }: SettingsViewProps) {
         </div>
 
         <div className="flex items-center justify-between pt-3 border-t border-[#E5EAF2]">
-          <div className="text-xs text-[#16A34A] flex items-center gap-1.5">
+          <div className="text-xs flex items-center gap-1.5">
             {savedNotice && (
-              <>
+              <span className="text-[#16A34A] inline-flex items-center gap-1.5">
                 <CheckCircle2 className="w-4 h-4" />
                 Settings saved to persistent server configuration.
-              </>
+              </span>
+            )}
+            {errorMessage && (
+              <span className="text-[#DC2626] inline-flex items-center gap-1.5">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                {errorMessage}
+              </span>
             )}
           </div>
           <button
