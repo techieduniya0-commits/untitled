@@ -79,8 +79,12 @@ export function buildPlainTextSummary(analysis: AnalysisRecord): string {
   const neutralEvidence = scoring?.neutralObservations ?? [];
   const disagreements = scoring?.disagreementReasons ?? [];
 
+  const isUpdated = Boolean(
+    analysis.isUpdatedReport && analysis.reanalysisSummary && analysis.userContext,
+  );
+
   return [
-    `TRUTHLENS FORENSIC REPORT${isPartial ? ' (PARTIAL)' : ''} — ${analysis.id}`,
+    `TRUTHLENS FORENSIC REPORT${isUpdated ? ' (UPDATED)' : ''}${isPartial ? ' (PARTIAL)' : ''} — ${analysis.id}`,
     `File: ${analysis.fileName} (${mediaTypeLabel(analysis.mediaType)}, ${formatBytes(analysis.fileSizeBytes)})`,
     `SHA-256: ${analysis.fileHash}`,
     `Analysed: ${formatDateTime(analysis.completedDate || analysis.uploadDate)}`,
@@ -99,6 +103,32 @@ export function buildPlainTextSummary(analysis: AnalysisRecord): string {
     `Methods Performed: ${completed.length} | Failed (Excluded): ${failed.length} | Unavailable: ${unavailable.length}`,
     ...(analysis.duplicateOfAnalysisId
       ? [`Duplicate SHA-256 Match: Previously analysed under ${analysis.duplicateOfAnalysisId}`]
+      : []),
+    ...(isUpdated && analysis.reanalysisSummary && analysis.userContext
+      ? [
+          '',
+          `UPDATED REPORT & REANALYSIS COMPARISON`,
+          `Score: ${analysis.reanalysisSummary.scoreBefore}/100 -> ${analysis.reanalysisSummary.scoreAfter}/100 (delta ${analysis.reanalysisSummary.scoreDelta >= 0 ? '+' : ''}${analysis.reanalysisSummary.scoreDelta})`,
+          `Classification: ${analysis.reanalysisSummary.classificationBefore} -> ${analysis.reanalysisSummary.classificationAfter}`,
+          `Evidence Strength: ${analysis.reanalysisSummary.evidenceStrengthBefore} -> ${analysis.reanalysisSummary.evidenceStrengthAfter}`,
+          `Confidence Basis: ${analysis.reanalysisSummary.adjustmentJustification}`,
+          `What Changed:`,
+          ...analysis.reanalysisSummary.whatChanged.map((c) => `- ${c}`),
+          ...(analysis.originalSnapshot
+            ? [
+                '',
+                `ORIGINAL AUTOMATED ANALYSIS SNAPSHOT (${formatDateTime(analysis.originalSnapshot.capturedAt)})`,
+                analysis.originalSnapshot.executiveSummary,
+              ]
+            : []),
+          '',
+          `USER-PROVIDED CONTEXT & STATEMENT (NOT INDEPENDENTLY VERIFIED EVIDENCE)`,
+          ...analysis.userContext.answers.map((a) => `- Q: ${a.question}\n  A (User-reported): ${a.answer}`),
+          ...(analysis.userContext.userStatement
+            ? [`- User Statement (Verbatim, User-reported): "${analysis.userContext.userStatement}"`]
+            : []),
+          `Evidentiary Boundary: ${analysis.reanalysisSummary.epistemicSeparationNote}`,
+        ]
       : []),
     '',
     `EXECUTIVE SUMMARY`,
@@ -182,9 +212,11 @@ export function exportForensicPdfReport(analysis: AnalysisRecord): void {
   doc.setFontSize(18);
   doc.setTextColor(23, 37, 84);
   doc.text(
-    analysis.isPartialReport || analysis.status === 'partially_completed'
-      ? 'TruthLens Partial Forensic Report'
-      : 'TruthLens Forensic Analysis Report',
+    analysis.isUpdatedReport
+      ? 'TruthLens Updated Forensic Analysis Report'
+      : analysis.isPartialReport || analysis.status === 'partially_completed'
+        ? 'TruthLens Partial Forensic Report'
+        : 'TruthLens Forensic Analysis Report',
     margin,
     y,
   );
@@ -317,6 +349,46 @@ export function exportForensicPdfReport(analysis: AnalysisRecord): void {
   }
   for (const step of analysis.geminiSummary?.recommendedNextSteps ?? []) {
     addBodyLines(`Next step: ${step}`, [37, 99, 235]);
+  }
+
+  // 6. Updated Report Comparison & Separated User-Provided Context (if applicable)
+  if (analysis.isUpdatedReport && analysis.reanalysisSummary && analysis.userContext) {
+    addSectionHeading('6. Reanalysis Comparison & User-Provided Context (Unverified)');
+    const rs = analysis.reanalysisSummary;
+    addBodyLines(
+      `Score: ${rs.scoreBefore}/100 -> ${rs.scoreAfter}/100  |  Classification: ${rs.classificationBefore} -> ${rs.classificationAfter}  |  Evidence Strength: ${rs.evidenceStrengthBefore} -> ${rs.evidenceStrengthAfter}`,
+      [23, 37, 84],
+      9.5,
+    );
+    addBodyLines(`Confidence Basis: ${rs.adjustmentJustification}`, [51, 65, 85], 9);
+    for (const change of rs.whatChanged) {
+      addBodyLines(`• ${change}`, [71, 85, 105], 8.5);
+    }
+    if (analysis.originalSnapshot) {
+      y += 4;
+      addBodyLines(
+        `Original Automated Findings (${formatDateTime(analysis.originalSnapshot.capturedAt)}): ${analysis.originalSnapshot.executiveSummary}`,
+        [71, 85, 105],
+        8.5,
+      );
+    }
+    y += 6;
+    addBodyLines(
+      'USER-PROVIDED CONTEXT & STATEMENT (NOT INDEPENDENTLY VERIFIED EVIDENCE):',
+      [91, 33, 182],
+      9.5,
+    );
+    for (const ans of analysis.userContext.answers) {
+      addBodyLines(`Q: ${ans.question} -> User Answer: ${ans.answer}`, [51, 65, 85], 8.5);
+    }
+    if (analysis.userContext.userStatement) {
+      addBodyLines(
+        `User Statement (Verbatim): "${analysis.userContext.userStatement}"`,
+        [23, 37, 84],
+        9,
+      );
+    }
+    addBodyLines(`Evidentiary Boundary: ${rs.epistemicSeparationNote}`, [91, 33, 182], 8.5);
   }
 
   doc.save(`truthlens-forensic-report-${analysis.id}.pdf`);

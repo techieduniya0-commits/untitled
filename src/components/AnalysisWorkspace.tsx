@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronUp,
   Circle,
+  HelpCircle,
   Loader2,
   MinusCircle,
   RefreshCw,
@@ -15,6 +16,7 @@ import {
 import { apiRequest, ApiRequestError, type ApiErrorInfo } from '../lib/api';
 import { formatBytes, formatDateTime, mediaTypeLabel } from '../lib/formatters';
 import type { AnalysisRecord, PipelineStage } from '../types/forensics';
+import { FollowUpContextPanel } from './FollowUpContextPanel';
 import { PremiumButton } from './PremiumUi';
 
 interface AnalysisWorkspaceProps {
@@ -366,6 +368,8 @@ export function AnalysisWorkspace({
                     <Loader2 className="w-3.5 h-3.5 text-[#6D28D9] animate-spin shrink-0" />
                   ) : item.status === 'completed' ? (
                     <CheckCircle2 className="w-3.5 h-3.5 text-[#16A34A] shrink-0" />
+                  ) : item.status === 'needs_context' ? (
+                    <HelpCircle className="w-3.5 h-3.5 text-[#7C3AED] shrink-0" />
                   ) : item.status === 'partially_completed' ? (
                     <AlertTriangle className="w-3.5 h-3.5 text-[#D97706] shrink-0" />
                   ) : (
@@ -459,6 +463,12 @@ export function AnalysisWorkspace({
               <ArrowRight className="w-3.5 h-3.5 transition-transform duration-200 group-hover:translate-x-0.5" />
             </PremiumButton>
           )}
+          {record.status === 'needs_context' && (
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#F3F0FF] border border-[#DDD6FE] text-xs font-semibold text-[#5B21B6]">
+              <HelpCircle className="w-3.5 h-3.5" />
+              Follow-up context needed
+            </span>
+          )}
           {record.status === 'failed' && (
             <PremiumButton variant="secondary" size="md" onClick={onNewUpload}>
               <RotateCcw className="w-3.5 h-3.5" />
@@ -467,6 +477,19 @@ export function AnalysisWorkspace({
           )}
         </div>
       </div>
+
+      {/* Interactive Follow-Up Questions Gate — Prevents Premature Incomplete Reports */}
+      {record.status === 'needs_context' && (
+        <FollowUpContextPanel
+          record={record}
+          mode="required"
+          onReanalysisComplete={(updated) => {
+            setRecord(updated);
+            onAnalysisUpdatedRef.current(updated);
+            onViewReport(updated);
+          }}
+        />
+      )}
 
       {/* Partial Completion Banner */}
       {record.status === 'partially_completed' && (
@@ -537,11 +560,13 @@ export function AnalysisWorkspace({
           <span className="text-xs font-mono tabular-nums text-[#52607A]">
             {record.status === 'processing'
               ? 'Polling backend…'
-              : record.status === 'completed'
-                ? `Completed ${formatDateTime(record.completedDate)}`
-                : record.status === 'partially_completed'
-                  ? `Partial report ${formatDateTime(record.completedDate)}`
-                  : 'Stopped'}
+              : record.status === 'needs_context'
+                ? 'Awaiting follow-up context'
+                : record.status === 'completed'
+                  ? `Completed ${formatDateTime(record.completedDate)}`
+                  : record.status === 'partially_completed'
+                    ? `Partial report ${formatDateTime(record.completedDate)}`
+                    : 'Stopped'}
           </span>
         </div>
 

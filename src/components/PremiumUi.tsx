@@ -200,6 +200,7 @@ export function ScrollReveal({ children, delay = 0, className = '' }: ScrollReve
 
   return (
     <motion.div
+      data-scroll-reveal="true"
       initial={{ opacity: 0, y: 18 }}
       whileInView={{ opacity: 1, y: 0 }}
       viewport={SCROLL_VIEWPORT}

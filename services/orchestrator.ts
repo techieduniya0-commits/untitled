@@ -6,10 +6,16 @@ import type {
   MediaType,
   PipelineStage,
   PipelineStageId,
+  UserFollowUpAnswer,
 } from '../src/types/forensics.ts';
 import { runAudioDetectionPipeline } from './audioDetection/index.ts';
 import { runDocumentDetectionPipeline } from './documentDetection/index.ts';
 import { FileValidationError, validateUploadedFile } from './fileValidation.ts';
+import {
+  buildOriginalSnapshot,
+  buildReanalysisChangeSummary,
+  evaluateEvidenceSufficiency,
+} from './followUpEngine.ts';
 import { GeminiServiceError } from './geminiClient.ts';
 import { runImageDetectionPipeline } from './imageDetection/index.ts';
 import { extractMetadataForFile } from './metadataExtraction/index.ts';
@@ -480,14 +486,12 @@ async function runPipelineInternal(
     analysis.isPartialReport = isPartialReport;
     analysis.canRetryGemini = Boolean(isPartialReport && analysis.mediaRetained);
 
-    // Stage 8: Report generation — produces full or honest partial report
+    // Stage 8: Evidence Sufficiency Gate & Report Generation
     currentStage = 'report_generation';
     await updateStage(
       'report_generation',
       'running',
-      isPartialReport
-        ? 'Compiling partial forensic report clearly separating completed local findings from failed Gemini detectors.'
-        : 'Compiling forensic report separating observed evidence from AI explanations.',
+      'Evaluating evidence completeness and compiling forensic findings.',
     );
     analysis.geminiSummary = await generateForensicReportNarrative({
       mediaType,
@@ -499,19 +503,43 @@ async function runPipelineInternal(
       geminiStatus: analysis.geminiStatus,
       geminiFailureDetail: analysis.geminiFailureDetail,
       skipGeminiNarrative: analysis.geminiStatus === 'failed',
+      userContext: analysis.userContext,
+      originalSnapshot: analysis.originalSnapshot,
     });
 
-    analysis.status = isPartialReport ? 'partially_completed' : 'completed';
-    analysis.errorCode = undefined;
-    analysis.errorMessage = undefined;
-    analysis.completedDate = new Date().toISOString();
-    await updateStage(
-      'report_generation',
-      isPartialReport ? 'partially_completed' : 'completed',
-      isPartialReport
-        ? 'Partial forensic report compiled and persisted. Retry Gemini Analysis available without repeating video preprocessing.'
-        : 'Forensic report compiled and persisted.',
-    );
+    // Preserve immutable snapshot of initial automated findings prior to any user follow-up
+    if (!analysis.originalSnapshot) {
+      analysis.originalSnapshot = buildOriginalSnapshot(analysis);
+    }
+
+    const sufficiency = evaluateEvidenceSufficiency(analysis);
+    analysis.insufficiencyReasons = sufficiency.reasons;
+    analysis.followUpQuestions = sufficiency.questions;
+
+    // Avoid prematurely issuing an incomplete/insufficient final report before asking user follow-up questions
+    if (!analysis.userContext && sufficiency.needsContext && sufficiency.questions.length > 0) {
+      analysis.status = 'needs_context';
+      analysis.errorCode = undefined;
+      analysis.errorMessage = undefined;
+      analysis.completedDate = new Date().toISOString();
+      await updateStage(
+        'report_generation',
+        'warning',
+        `Essential information is missing or inconclusive (${sufficiency.reasons.length} gap(s)). Prepared ${sufficiency.questions.length} follow-up question(s) before generating the final report.`,
+      );
+    } else {
+      analysis.status = isPartialReport && !analysis.userContext ? 'partially_completed' : 'completed';
+      analysis.errorCode = undefined;
+      analysis.errorMessage = undefined;
+      analysis.completedDate = new Date().toISOString();
+      await updateStage(
+        'report_generation',
+        'completed',
+        analysis.isUpdatedReport
+          ? 'Updated forensic report compiled with original findings, user-provided context, and reanalysis comparison.'
+          : 'Complete forensic report compiled and persisted.',
+      );
+    }
   } catch (error) {
     let errorCode = 'PROCESSING_ERROR';
     let message = error instanceof Error ? error.message : 'Unexpected forensic pipeline failure.';
@@ -598,4 +626,124 @@ export async function retryAnalysisPipeline(
 
   void pipelinePromise;
   return record;
+}
+
+export async function submitFollowUpAndReanalyse(options: {
+  analysisId: string;
+  answers: UserFollowUpAnswer[];
+  userStatement: string;
+  rerunAutomatedDetectors?: boolean;
+}): Promise<AnalysisRecord> {
+  const { analysisId, answers, userStatement } = options;
+  const record = await getAnalysisById(analysisId);
+  if (!record) {
+    throw new PipelineRetryError(404, 'NOT_FOUND', 'Analysis record not found.');
+  }
+  if (record.status === 'processing' || activePipelineRuns.has(record.id)) {
+    throw new PipelineRetryError(409, 'ALREADY_PROCESSING', 'This analysis is currently running.');
+  }
+
+  const cleanedAnswers: UserFollowUpAnswer[] = (Array.isArray(answers) ? answers : [])
+    .map((item) => ({
+      questionId: String(item.questionId ?? '').trim(),
+      question: String(item.question ?? '').trim(),
+      answer: String(item.answer ?? '').trim(),
+    }))
+    .filter((item) => item.question.length > 0 && item.answer.length > 0);
+  const cleanedStatement = String(userStatement ?? '').trim();
+
+  if (cleanedAnswers.length === 0 && !cleanedStatement) {
+    throw new PipelineRetryError(
+      400,
+      'EMPTY_CONTEXT',
+      'Please answer at least one follow-up question or provide a brief statement before generating the updated report.',
+    );
+  }
+
+  // Always preserve immutable original automated findings before applying user context
+  if (!record.originalSnapshot) {
+    record.originalSnapshot = buildOriginalSnapshot(record);
+  }
+  const originalSnapshot = record.originalSnapshot;
+  const priorFailedCount = record.detectors.filter((d) => d.status === 'failed').length;
+
+  const originalPath = await findRetainedOriginalPath(record.id);
+  const shouldRerunDetectors = Boolean(
+    originalPath &&
+      (priorFailedCount > 0 ||
+        record.geminiStatus === 'failed' ||
+        record.geminiStatus === 'partially_completed' ||
+        options.rerunAutomatedDetectors),
+  );
+
+  record.userContext = {
+    submittedAt: new Date().toISOString(),
+    answers: cleanedAnswers,
+    userStatement: cleanedStatement,
+    rerunAutomatedDetectors: shouldRerunDetectors,
+  };
+  record.isUpdatedReport = true;
+
+  activePipelineRuns.add(record.id);
+  try {
+    if (shouldRerunDetectors && originalPath) {
+      const canReuseVideoFrames = await verifyCachedVideoFrames(record);
+      record.retryCount = (record.retryCount ?? 0) + 1;
+      record.status = 'processing';
+      await upsertAnalysis(record);
+      await runPipelineInternal(record, originalPath, {
+        reuseVideoPreprocessing: canReuseVideoFrames,
+      });
+    } else if (record.metadata) {
+      // Re-aggregate objective detector findings (never modifying raw scores based on user opinion)
+      const scoring = aggregateForensicEvidence(record.detectors);
+      record.scoring = scoring;
+      record.geminiSummary = await generateForensicReportNarrative({
+        mediaType: record.mediaType,
+        metadata: record.metadata,
+        detectors: record.detectors,
+        watermarks: record.watermarks,
+        scoring,
+        samplingStrategy: record.videoSamplingStrategy,
+        geminiStatus: record.geminiStatus,
+        geminiFailureDetail: record.geminiFailureDetail,
+        skipGeminiNarrative: record.geminiStatus === 'failed',
+        userContext: record.userContext,
+        originalSnapshot,
+      });
+    }
+
+    const latestScoring = record.scoring ?? aggregateForensicEvidence(record.detectors);
+    record.scoring = latestScoring;
+    const currentFailedCount = record.detectors.filter((d) => d.status === 'failed').length;
+    const recoveredDetectorsCount = Math.max(0, priorFailedCount - currentFailedCount);
+
+    record.reanalysisSummary = buildReanalysisChangeSummary({
+      original: originalSnapshot,
+      updatedScoring: latestScoring,
+      userContext: record.userContext,
+      detectorsRerun: shouldRerunDetectors,
+      recoveredDetectorsCount,
+    });
+    record.isUpdatedReport = true;
+    record.status = 'completed';
+    record.isPartialReport = currentFailedCount > 0;
+    record.completedDate = new Date().toISOString();
+    record.stages = record.stages.map((st) =>
+      st.id === 'report_generation'
+        ? {
+            ...st,
+            status: 'completed',
+            completedAt: record.completedDate,
+            detail:
+              'Updated forensic report generated with original findings, user-provided context (clearly separated), and reanalysis diff.',
+          }
+        : st,
+    );
+
+    await upsertAnalysis(record);
+    return (await getAnalysisById(record.id)) ?? record;
+  } finally {
+    activePipelineRuns.delete(record.id);
+  }
 }

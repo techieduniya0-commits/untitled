@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
+  ArrowRight,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -12,11 +13,15 @@ import {
   ExternalLink,
   FileJson,
   Info,
+  MessageSquarePlus,
   MinusCircle,
   Play,
   RefreshCw,
   ScanEye,
+  ShieldAlert,
+  Sparkles,
   Upload,
+  UserCheck,
   XCircle,
 } from 'lucide-react';
 import {
@@ -36,6 +41,7 @@ import {
   formatDateTime,
   mediaTypeLabel,
 } from '../lib/formatters';
+import { FollowUpContextPanel } from './FollowUpContextPanel';
 
 interface ForensicReportViewProps {
   analysis: AnalysisRecord;
@@ -43,6 +49,7 @@ interface ForensicReportViewProps {
   onNewUpload?: () => void;
   onSaveToDataset: (analysis: AnalysisRecord) => Promise<void>;
   onRetryAnalysis?: (id: string) => Promise<void>;
+  onAnalysisUpdated?: (updated: AnalysisRecord) => void;
 }
 
 export function ForensicReportView({
@@ -51,11 +58,13 @@ export function ForensicReportView({
   onNewUpload,
   onSaveToDataset,
   onRetryAnalysis,
+  onAnalysisUpdated,
 }: ForensicReportViewProps) {
   const [copied, setCopied] = useState(false);
   const [savedToDataset, setSavedToDataset] = useState(false);
   const [savingDataset, setSavingDataset] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [showFollowUpDrawer, setShowFollowUpDrawer] = useState(false);
   const [expandedDetectorId, setExpandedDetectorId] = useState<string | null>(null);
   const [selectedFrame, setSelectedFrame] = useState<VideoFrameSample | null>(
     analysis.videoFrames?.[0] ?? null,
@@ -371,6 +380,20 @@ export function ForensicReportView({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {onAnalysisUpdated && (
+            <button
+              type="button"
+              onClick={() => setShowFollowUpDrawer((v) => !v)}
+              className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                showFollowUpDrawer
+                  ? 'bg-[#F3F0FF] text-[#5B21B6] border-[#C4B5FD]'
+                  : 'text-[#5B21B6] bg-white hover:bg-[#F5F3FF] border-[#DDD6FE]'
+              }`}
+            >
+              <MessageSquarePlus className="w-3.5 h-3.5" />
+              {analysis.isUpdatedReport ? 'Update context & reanalyse' : 'Add context & reanalyse'}
+            </button>
+          )}
           {onNewUpload && (
             <button
               type="button"
@@ -426,6 +449,19 @@ export function ForensicReportView({
           </button>
         </div>
       </div>
+
+      {/* Optional Follow-Up Context Drawer */}
+      {showFollowUpDrawer && (
+        <FollowUpContextPanel
+          record={analysis}
+          mode="optional"
+          onCancel={() => setShowFollowUpDrawer(false)}
+          onReanalysisComplete={(updated) => {
+            setShowFollowUpDrawer(false);
+            onAnalysisUpdated?.(updated);
+          }}
+        />
+      )}
 
       {/* Partial Forensic Report Disclosure Banner */}
       {isPartialReport && (
@@ -600,6 +636,185 @@ export function ForensicReportView({
               high-stakes decisions with provenance checks, original source verification, and human
               review.
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* Updated Report & Reanalysis Transparency Section (Original vs Updated + Separated User Context) */}
+      {analysis.isUpdatedReport && analysis.reanalysisSummary && analysis.userContext && (
+        <div className="tl-glass-panel rounded-2xl overflow-hidden border-[#C4B5FD]/80">
+          <div className="px-6 py-4 bg-gradient-to-r from-[#EFF6FF]/85 via-[#F5F3FF]/85 to-white border-b border-[#DDD6FE]/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-start gap-3">
+              <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#2563EB] to-[#7C3AED] flex items-center justify-center text-white shrink-0 mt-0.5">
+                <Sparkles className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-base font-bold text-[#172554]">
+                  Updated Forensic Report — Reanalysis &amp; User Context Disclosure
+                </h2>
+                <p className="text-xs text-[#52607A] mt-0.5">
+                  Updated {formatDateTime(analysis.reanalysisSummary.updatedAt)} · Preserves
+                  original automated findings alongside your submitted context and statement.
+                </p>
+              </div>
+            </div>
+            <span className="text-[11px] font-mono uppercase tracking-wider font-semibold text-[#5B21B6] bg-white/90 border border-[#DDD6FE] rounded-lg px-2.5 py-1 whitespace-nowrap self-start sm:self-center">
+              Updated Report
+            </span>
+          </div>
+
+          <div className="p-6 space-y-6">
+            {/* Original vs Updated Comparison Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="rounded-xl bg-[#F8FAFF] border border-[#DCE8F8] p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-[#52607A]">
+                  AI-Likelihood Score
+                </p>
+                <div className="mt-2 flex items-center gap-2 font-mono tabular-nums text-sm">
+                  <span className="text-[#64748B]">
+                    {analysis.reanalysisSummary.scoreBefore}/100
+                  </span>
+                  <ArrowRight className="w-3.5 h-3.5 text-[#7C3AED]" />
+                  <span className="font-bold text-[#172554] text-base">
+                    {analysis.reanalysisSummary.scoreAfter}/100
+                  </span>
+                  <span className="text-xs text-[#64748B]">
+                    (
+                    {analysis.reanalysisSummary.scoreDelta === 0
+                      ? 'no change'
+                      : `${analysis.reanalysisSummary.scoreDelta > 0 ? '+' : ''}${analysis.reanalysisSummary.scoreDelta}`}
+                    )
+                  </span>
+                </div>
+              </div>
+
+              <div className="rounded-xl bg-[#F8FAFF] border border-[#DCE8F8] p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-[#52607A]">
+                  Classification
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="text-[#64748B]">
+                    {analysis.reanalysisSummary.classificationBefore}
+                  </span>
+                  <ArrowRight className="w-3.5 h-3.5 text-[#7C3AED] shrink-0" />
+                  <span className="font-semibold text-[#172554]">
+                    {analysis.reanalysisSummary.classificationAfter}
+                  </span>
+                </div>
+              </div>
+
+              <div className="rounded-xl bg-[#F8FAFF] border border-[#DCE8F8] p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-[#52607A]">
+                  Evidence Strength
+                </p>
+                <div className="mt-2 flex items-center gap-2 text-xs">
+                  <span className="text-[#64748B]">
+                    {analysis.reanalysisSummary.evidenceStrengthBefore}
+                  </span>
+                  <ArrowRight className="w-3.5 h-3.5 text-[#7C3AED]" />
+                  <span className="font-semibold text-[#172554]">
+                    {analysis.reanalysisSummary.evidenceStrengthAfter}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Confidence Adjustment Justification */}
+            <div className="rounded-xl bg-[#EFF6FF]/70 border border-[#BFDBFE] p-4 text-xs text-[#1E3A8A] leading-relaxed">
+              <span className="font-semibold">Confidence score basis: </span>
+              {analysis.reanalysisSummary.adjustmentJustification}
+            </div>
+
+            {/* Two-Column Split: Original Automated Findings + What Changed vs User-Provided Context */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+              {/* Left: Objective Original Findings & Delta */}
+              <div className="lg:col-span-6 space-y-4">
+                <div className="rounded-xl bg-white/90 border border-[#DCE8F8] p-4 space-y-2">
+                  <p className="text-xs font-semibold text-[#172554]">
+                    What Changed Between Original and Updated Analysis
+                  </p>
+                  <ul className="space-y-1.5 text-xs text-[#52607A] list-disc pl-4 leading-relaxed">
+                    {analysis.reanalysisSummary.whatChanged.map((item, idx) => (
+                      <li key={idx}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                {analysis.originalSnapshot && (
+                  <div className="rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] p-4 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold text-[#172554]">
+                        Original Automated Analysis Snapshot
+                      </p>
+                      <span className="text-[11px] font-mono text-[#64748B]">
+                        {formatDateTime(analysis.originalSnapshot.capturedAt)}
+                      </span>
+                    </div>
+                    <p className="text-xs text-[#52607A] leading-relaxed">
+                      {analysis.originalSnapshot.executiveSummary}
+                    </p>
+                    <p className="text-[11px] font-mono text-[#64748B] pt-1">
+                      Original automated counts:{' '}
+                      {analysis.originalSnapshot.evidenceSupportingAi.length} AI-supporting ·{' '}
+                      {analysis.originalSnapshot.evidenceSupportingNaturalCapture.length}{' '}
+                      natural-capture · {analysis.originalSnapshot.conflictingFindings.length}{' '}
+                      conflicts
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Right: Strictly Separated User-Provided Context & Statement */}
+              <div className="lg:col-span-6 rounded-xl bg-[#FAF5FF]/90 border border-[#DDD6FE] p-5 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <UserCheck className="w-4 h-4 text-[#6D28D9]" />
+                    <h3 className="text-xs font-bold uppercase tracking-wide text-[#4C1D95]">
+                      User-Provided Context &amp; Statement
+                    </h3>
+                  </div>
+                  <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-[#6D28D9] bg-white border border-[#DDD6FE] rounded-md px-2 py-0.5">
+                    <ShieldAlert className="w-3 h-3" />
+                    Not independently verified evidence
+                  </span>
+                </div>
+
+                {analysis.userContext.answers.length > 0 && (
+                  <div className="space-y-2.5">
+                    <p className="text-[11px] font-semibold text-[#5B21B6]">
+                      Follow-Up Responses Provided by User
+                    </p>
+                    <div className="space-y-2">
+                      {analysis.userContext.answers.map((ans) => (
+                        <div
+                          key={ans.questionId}
+                          className="rounded-lg bg-white/90 border border-[#E9D5FF] px-3.5 py-2.5 text-xs"
+                        >
+                          <p className="font-medium text-[#52607A]">{ans.question}</p>
+                          <p className="mt-1 font-semibold text-[#172554]">{ans.answer}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {analysis.userContext.userStatement && (
+                  <div className="space-y-1.5">
+                    <p className="text-[11px] font-semibold text-[#5B21B6]">
+                      User Statement (Verbatim — User-Reported)
+                    </p>
+                    <blockquote className="rounded-lg bg-white/95 border-l-3 border-[#7C3AED] px-3.5 py-2.5 text-xs text-[#172554] leading-relaxed whitespace-pre-wrap">
+                      “{analysis.userContext.userStatement}”
+                    </blockquote>
+                  </div>
+                )}
+
+                <p className="text-[11px] leading-relaxed text-[#5B21B6]/90 pt-2 border-t border-[#E9D5FF]">
+                  <strong>Evidentiary boundary:</strong>{' '}
+                  {analysis.reanalysisSummary.epistemicSeparationNote}
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1037,7 +1252,7 @@ export function ForensicReportView({
             )}
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
             {[
               [
                 'Spectral Centroid',
@@ -1048,6 +1263,18 @@ export function ForensicReportView({
               ['Silence Ratio', `${(analysis.audioProfile.silenceRatio * 100).toFixed(1)}%`],
               ['Dynamic Range', `${analysis.audioProfile.dynamicRangeDb} dB`],
               ['Clipping Rate', `${(analysis.audioProfile.clippingRate * 100).toFixed(2)}%`],
+              [
+                'Noise Floor',
+                analysis.audioProfile.noiseFloorDb !== undefined
+                  ? `${analysis.audioProfile.noiseFloorDb} dB`
+                  : 'N/A',
+              ],
+              [
+                'Synthetic Cues Aligned',
+                `${analysis.audioProfile.syntheticIndicatorCount ?? 0} indicator${
+                  (analysis.audioProfile.syntheticIndicatorCount ?? 0) === 1 ? '' : 's'
+                }`,
+              ],
             ].map(([label, val]) => (
               <div key={label} className="bg-[#F5F7FB] border border-[#E5EAF2] rounded-lg p-3">
                 <p className="text-[11px] text-[#64748B]">{label}</p>
@@ -1076,6 +1303,76 @@ export function ForensicReportView({
               </BarChart>
             </ResponsiveContainer>
           </div>
+
+          {/* Multi-Indicator Speech Assessment: Detected Evidence vs Uncertain Signals vs Natural Cues */}
+          {(analysis.audioProfile.detectedIndicators?.length ||
+            analysis.audioProfile.uncertainSignals?.length ||
+            analysis.audioProfile.naturalCues?.length) && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="rounded-xl bg-[#FEF2F2]/70 border border-[#FECACA] p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-xs font-semibold text-[#B91C1C]">
+                    Detected Synthetic Speech Evidence
+                  </h3>
+                  <span className="text-[11px] font-mono text-[#991B1B]">
+                    {analysis.audioProfile.detectedIndicators?.length ?? 0}
+                  </span>
+                </div>
+                <ul className="mt-2.5 space-y-1.5 text-xs text-[#7F1D1D]/90 list-disc pl-4 leading-relaxed">
+                  {analysis.audioProfile.detectedIndicators &&
+                  analysis.audioProfile.detectedIndicators.length > 0 ? (
+                    analysis.audioProfile.detectedIndicators.map((item, idx) => (
+                      <li key={idx}>{item}</li>
+                    ))
+                  ) : (
+                    <li className="text-[#64748B]">
+                      No corroborated multi-indicator synthetic speech evidence detected.
+                    </li>
+                  )}
+                </ul>
+              </div>
+
+              <div className="rounded-xl bg-[#FFFBEB]/80 border border-[#FDE68A] p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-xs font-semibold text-[#92400E]">
+                    Uncertain Signals (Not Standalone Proof)
+                  </h3>
+                  <span className="text-[11px] font-mono text-[#92400E]">
+                    {analysis.audioProfile.uncertainSignals?.length ?? 0}
+                  </span>
+                </div>
+                <ul className="mt-2.5 space-y-1.5 text-xs text-[#92400E]/90 list-disc pl-4 leading-relaxed">
+                  {analysis.audioProfile.uncertainSignals &&
+                  analysis.audioProfile.uncertainSignals.length > 0 ? (
+                    analysis.audioProfile.uncertainSignals.map((item, idx) => (
+                      <li key={idx}>{item}</li>
+                    ))
+                  ) : (
+                    <li className="text-[#64748B]">No isolated or ambiguous audio cues recorded.</li>
+                  )}
+                </ul>
+              </div>
+
+              <div className="rounded-xl bg-[#F0FDF4]/80 border border-[#BBF7D0] p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-xs font-semibold text-[#15803D]">
+                    Natural Human Audio Cues
+                  </h3>
+                  <span className="text-[11px] font-mono text-[#166534]">
+                    {analysis.audioProfile.naturalCues?.length ?? 0}
+                  </span>
+                </div>
+                <ul className="mt-2.5 space-y-1.5 text-xs text-[#166534]/90 list-disc pl-4 leading-relaxed">
+                  {analysis.audioProfile.naturalCues &&
+                  analysis.audioProfile.naturalCues.length > 0 ? (
+                    analysis.audioProfile.naturalCues.map((item, idx) => <li key={idx}>{item}</li>)
+                  ) : (
+                    <li className="text-[#64748B]">No explicit natural speech cues logged.</li>
+                  )}
+                </ul>
+              </div>
+            </div>
+          )}
 
           {analysis.audioProfile.segments.length > 0 && (
             <div className="divide-y divide-[#E5EAF2] border border-[#E5EAF2] rounded-lg">

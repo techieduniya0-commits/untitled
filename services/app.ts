@@ -15,6 +15,7 @@ import {
   executeForensicPipeline,
   PipelineRetryError,
   retryAnalysisPipeline,
+  submitFollowUpAndReanalyse,
 } from './orchestrator.ts';
 import {
   deleteAnalysis,
@@ -412,6 +413,37 @@ export function createApiApp(): Express {
           ok: false,
           error: e instanceof Error ? e.message : 'Unable to retry forensic analysis.',
           code: 'RETRY_ERROR',
+        });
+      }
+    }),
+  );
+
+  // Submit interactive follow-up answers & user statement and generate transparent updated report
+  app.post(
+    '/api/analyses/:id/followup',
+    asyncHandler(async (req, res) => {
+      try {
+        const body = req.body ?? {};
+        const analysis = await submitFollowUpAndReanalyse({
+          analysisId: req.params.id,
+          answers: Array.isArray(body.answers) ? body.answers : [],
+          userStatement: typeof body.userStatement === 'string' ? body.userStatement : '',
+          rerunAutomatedDetectors: Boolean(body.rerunAutomatedDetectors),
+        });
+        res.status(200).json({
+          ok: true,
+          mode: 'sync',
+          analysis,
+        });
+      } catch (e) {
+        if (e instanceof PipelineRetryError) {
+          res.status(e.statusCode).json({ ok: false, error: e.message, code: e.code });
+          return;
+        }
+        res.status(500).json({
+          ok: false,
+          error: e instanceof Error ? e.message : 'Unable to reanalyse with follow-up context.',
+          code: 'FOLLOWUP_ERROR',
         });
       }
     }),

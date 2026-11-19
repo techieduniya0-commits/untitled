@@ -317,6 +317,34 @@ export function aggregateForensicEvidence(detectors: DetectorResult[]): ScoringB
     aiLikelihoodScore = Math.round(rawAggregate * 0.68 + 50 * 0.32);
   }
 
+  const isAudioPipeline = detectors.some(
+    (d) => d.id === 'ai_speech_classification' || d.id === 'audio_spectral_analysis',
+  );
+  const audioAiGroups = isAudioPipeline ? groupScores.filter((g) => g.polarity === 'ai_indicator') : [];
+  const audioEncoderAiMatch = isAudioPipeline && completed.some(
+    (d) => d.id === 'audio_metadata_inspection' && (d.rawSignalScore ?? 0) >= 72,
+  );
+  let audioSingleIndicatorCapped = false;
+  let audioMultiIndicatorBoost = 0;
+
+  if (isAudioPipeline && !visibleAiWatermark && !c2paAiClaim) {
+    if (audioAiGroups.length === 1 && aiIndicatorDetectors.length === 1 && !audioEncoderAiMatch) {
+      // Never automatically label audio as AI-generated based on a single isolated indicator
+      if (aiLikelihoodScore > 58) {
+        aiLikelihoodScore = 58;
+        audioSingleIndicatorCapped = true;
+      }
+    } else if (
+      aiIndicatorDetectors.length >= 2 &&
+      audioAiGroups.length >= 2 &&
+      conflictingFindings.length === 0
+    ) {
+      // Multiple independent synthetic speech indicators corroborate AI-generated speech -> increase confidence proportionally
+      audioMultiIndicatorBoost = aiIndicatorDetectors.length >= 3 ? 10 : 6;
+      aiLikelihoodScore = Math.min(94, aiLikelihoodScore + audioMultiIndicatorBoost);
+    }
+  }
+
   // Only strong watermark or provenance evidence can elevate floor — never claiming 100%
   if (visibleAiWatermark && aiLikelihoodScore < 74) {
     aiLikelihoodScore = Math.min(94, Math.max(aiLikelihoodScore, 78));
@@ -351,7 +379,10 @@ export function aggregateForensicEvidence(detectors: DetectorResult[]): ScoringB
   if (totalWeight === 0) {
     evidenceStrength = 'Low';
   } else if (
-    (visibleAiWatermark || c2paAiClaim || (strongSignals >= 2 && providerCount >= 2)) &&
+    (visibleAiWatermark ||
+      c2paAiClaim ||
+      (strongSignals >= 2 && providerCount >= 2) ||
+      (isAudioPipeline && aiIndicatorDetectors.length >= 3 && audioAiGroups.length >= 3 && conflictingFindings.length === 0)) &&
     independentCount >= 2 &&
     conflictingFindings.length === 0
   ) {
@@ -368,10 +399,21 @@ export function aggregateForensicEvidence(detectors: DetectorResult[]): ScoringB
 
   // Recalibrated classification logic: strict anti-false-positive discipline
   let classification: Classification = 'Inconclusive';
-  const hasDocumentPipeline = completed.some((d) => d.category === 'linguistic');
+  const hasDocumentPipeline = completed.some(
+    (d) =>
+      d.category === 'linguistic' &&
+      !isAudioPipeline &&
+      (d.id.includes('stylometry') ||
+        d.id.includes('burstiness') ||
+        d.id.includes('ngram') ||
+        d.id.includes('linguistic') ||
+        d.id.includes('document')),
+  );
   const hasStrongProvenanceAi = Boolean(visibleAiWatermark || c2paAiClaim);
 
   if (totalWeight === 0) {
+    classification = 'Inconclusive';
+  } else if (audioSingleIndicatorCapped) {
     classification = 'Inconclusive';
   } else if (
     conflictingFindings.length > 0 &&
@@ -388,10 +430,10 @@ export function aggregateForensicEvidence(detectors: DetectorResult[]): ScoringB
   ) {
     classification = 'Potentially manipulated';
   } else if (
-    aiLikelihoodScore >= 72 &&
+    aiLikelihoodScore >= 70 &&
     (hasStrongProvenanceAi ||
       (aiIndicatorDetectors.length >= 2 && conflictingFindings.length === 0) ||
-      (aiLikelihoodScore >= 80 && conflictingFindings.length === 0))
+      (!isAudioPipeline && aiLikelihoodScore >= 80 && conflictingFindings.length === 0))
   ) {
     classification =
       hasDocumentPipeline && evidenceStrength !== 'Strong'
@@ -421,6 +463,16 @@ export function aggregateForensicEvidence(detectors: DetectorResult[]): ScoringB
     `Evidence polarity split: ${evidenceSupportingAi.length} AI-supporting indicator(s), ${evidenceSupportingNaturalCapture.length} natural-capture observation(s), and ${neutralObservations.length} neutral/informational observation(s).`,
   ];
 
+  if (audioMultiIndicatorBoost > 0) {
+    scoreExplanation.push(
+      `Multi-indicator synthetic speech corroboration: ${aiIndicatorDetectors.length} independent audio indicators aligned without conflict, increasing AI-generated speech confidence by +${audioMultiIndicatorBoost} points.`,
+    );
+  }
+  if (audioSingleIndicatorCapped) {
+    scoreExplanation.push(
+      'Single-indicator audio safeguard applied: only one audio cue was elevated without corroboration, so the score was capped at 58/100 (Inconclusive) rather than automatically labeling the recording as AI-generated.',
+    );
+  }
   if (failed.length > 0) {
     scoreExplanation.push(
       `${failed.length} detector(s) failed due to temporary upstream unavailability and were excluded from scoring (API failures are never treated as evidence of AI generation).`,

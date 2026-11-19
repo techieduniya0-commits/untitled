@@ -242,6 +242,13 @@ export interface AudioProfile {
   silenceRatio: number;
   dynamicRangeDb: number;
   clippingRate: number;
+  noiseFloorDb?: number | null;
+  spectralFlatness?: number | null;
+  speechDetected?: boolean;
+  syntheticIndicatorCount?: number;
+  detectedIndicators?: string[];
+  uncertainSignals?: string[];
+  naturalCues?: string[];
   segments: AudioSegmentFinding[];
 }
 
@@ -292,6 +299,66 @@ export interface GeminiForensicSummary {
   generatedAt: string;
 }
 
+export interface FollowUpQuestion {
+  id: string;
+  category:
+    | 'missing_metadata'
+    | 'conflicting_signals'
+    | 'incomplete_pipeline'
+    | 'audio_context'
+    | 'capture_origin'
+    | 'editing_history';
+  question: string;
+  whyAsked: string;
+  suggestedChoices?: string[];
+  placeholder: string;
+}
+
+export interface UserFollowUpAnswer {
+  questionId: string;
+  question: string;
+  answer: string;
+}
+
+export interface UserProvidedContext {
+  submittedAt: string;
+  answers: UserFollowUpAnswer[];
+  userStatement: string;
+  rerunAutomatedDetectors: boolean;
+}
+
+export interface OriginalAnalysisSnapshot {
+  capturedAt: string;
+  status: 'needs_context' | 'completed' | 'partially_completed' | 'failed';
+  aiLikelihoodScore: number;
+  classification: Classification;
+  evidenceStrength: EvidenceStrength;
+  overallReliability: 'Low' | 'Moderate' | 'High';
+  completenessPercent: number;
+  methodsPerformedCount: number;
+  methodsFailedCount: number;
+  evidenceSupportingAi: string[];
+  evidenceSupportingNaturalCapture: string[];
+  neutralObservations: string[];
+  conflictingFindings: string[];
+  executiveSummary: string;
+}
+
+export interface ReanalysisChangeSummary {
+  updatedAt: string;
+  scoreBefore: number;
+  scoreAfter: number;
+  scoreDelta: number;
+  classificationBefore: Classification;
+  classificationAfter: Classification;
+  evidenceStrengthBefore: EvidenceStrength;
+  evidenceStrengthAfter: EvidenceStrength;
+  confidenceAdjusted: boolean;
+  adjustmentJustification: string;
+  whatChanged: string[];
+  epistemicSeparationNote: string;
+}
+
 export interface AnalysisRecord {
   id: string;
   fileName: string;
@@ -301,7 +368,7 @@ export interface AnalysisRecord {
   fileHash: string;
   fileSizeBytes: number;
   mimeType: string;
-  status: 'processing' | 'completed' | 'partially_completed' | 'failed';
+  status: 'processing' | 'needs_context' | 'completed' | 'partially_completed' | 'failed';
   errorMessage?: string;
   errorCode?: string;
   geminiStatus?: 'completed' | 'partially_completed' | 'failed' | 'unavailable' | 'retrying' | 'not_run';
@@ -327,6 +394,12 @@ export interface AnalysisRecord {
   documentSegments?: DocumentSegmentFinding[];
   documentStats?: DocumentStats;
   audioProfile?: AudioProfile;
+  insufficiencyReasons?: string[];
+  followUpQuestions?: FollowUpQuestion[];
+  originalSnapshot?: OriginalAnalysisSnapshot;
+  userContext?: UserProvidedContext;
+  reanalysisSummary?: ReanalysisChangeSummary;
+  isUpdatedReport?: boolean;
 }
 
 export type GroundTruthLabel =

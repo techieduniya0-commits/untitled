@@ -16,6 +16,7 @@ import {
 import { motion, useMotionValue, useReducedMotion, useSpring, useTransform } from 'motion/react';
 import { MOTION_DURATION, MOTION_EASE } from '../lib/motion';
 import { HeroAmbientParticles, HeroForensicScanner } from './HeroForensicScanner';
+import { LandingMagnifier } from './LandingMagnifier';
 import { GlassCard, PremiumButton, ScrollReveal } from './PremiumUi';
 import { TruthLensLogo } from './TruthLensLogo';
 
@@ -38,6 +39,7 @@ export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
   const [isScrolled, setIsScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const heroSectionRef = useRef<HTMLElement | null>(null);
+  const landingContentRef = useRef<HTMLDivElement | null>(null);
   const prefersReducedMotion = Boolean(useReducedMotion());
 
   const pointerX = useMotionValue(0);
@@ -168,7 +170,11 @@ export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
         )}
       </header>
 
-      <main className="relative z-10">
+      {/* Real Interactive Optical Magnifying Glass — Strictly Landing Page Only */}
+      <LandingMagnifier targetRef={landingContentRef} />
+
+      <div ref={landingContentRef} className="relative z-10">
+        <main className="relative">
         {/* Hero Section — Continuous White & Pale-Blue Atmospheric Field */}
         <section
           id="home"
@@ -679,6 +685,7 @@ export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
           </div>
         </div>
       </footer>
+      </div>
     </div>
   );
 }
