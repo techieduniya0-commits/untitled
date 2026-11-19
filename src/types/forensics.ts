@@ -283,10 +283,25 @@ export interface ScoringBreakdown {
   methodContributions: MethodContribution[];
 }
 
+export interface ForensicKeyTakeaway {
+  title: string;
+  detail: string;
+  polarity: 'ai_indicator' | 'natural_capture' | 'neutral' | 'caution';
+}
+
+export interface ForensicChecklistItem {
+  action: string;
+  priority: 'High' | 'Medium' | 'Low';
+  rationale: string;
+}
+
 export interface GeminiForensicSummary {
+  verdictHeadline?: string;
   executiveSummary: string;
   observedEvidence: string[];
   aiExplanation: string;
+  evidenceCrossCheck?: string;
+  keyTakeaways?: ForensicKeyTakeaway[];
   suspiciousIndicators: string[];
   evidenceSupportingAi?: string[];
   evidenceSupportingNaturalCapture?: string[];
@@ -294,6 +309,7 @@ export interface GeminiForensicSummary {
   disagreementReasons?: string[];
   technicalObservations: string[];
   recommendedNextSteps: string[];
+  verificationChecklist?: ForensicChecklistItem[];
   confidenceLimitations: string[];
   modelUsed: string;
   generatedAt: string;

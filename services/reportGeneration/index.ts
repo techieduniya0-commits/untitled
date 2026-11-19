@@ -3,6 +3,8 @@ import type {
   AnalysisRecord,
   DetectorResult,
   ExtractedMetadata,
+  ForensicChecklistItem,
+  ForensicKeyTakeaway,
   GeminiForensicSummary,
   MediaType,
   ScoringBreakdown,
@@ -11,30 +13,67 @@ import type {
 import { runStructuredGeminiAnalysisWithMeta } from '../geminiClient.ts';
 
 interface GeminiNarrativeOutput {
+  verdictHeadline: string;
   executiveSummary: string;
   aiExplanation: string;
+  evidenceCrossCheck: string;
+  keyTakeaways: ForensicKeyTakeaway[];
   suspiciousIndicators: string[];
   technicalObservations: string[];
   recommendedNextSteps: string[];
+  verificationChecklist: ForensicChecklistItem[];
   confidenceLimitations: string[];
 }
 
 const REPORT_NARRATIVE_SCHEMA = {
   type: Type.OBJECT,
   properties: {
+    verdictHeadline: { type: Type.STRING },
     executiveSummary: { type: Type.STRING },
     aiExplanation: { type: Type.STRING },
+    evidenceCrossCheck: { type: Type.STRING },
+    keyTakeaways: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          title: { type: Type.STRING },
+          detail: { type: Type.STRING },
+          polarity: {
+            type: Type.STRING,
+            enum: ['ai_indicator', 'natural_capture', 'neutral', 'caution'],
+          },
+        },
+        required: ['title', 'detail', 'polarity'],
+      },
+    },
     suspiciousIndicators: { type: Type.ARRAY, items: { type: Type.STRING } },
     technicalObservations: { type: Type.ARRAY, items: { type: Type.STRING } },
     recommendedNextSteps: { type: Type.ARRAY, items: { type: Type.STRING } },
+    verificationChecklist: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          action: { type: Type.STRING },
+          priority: { type: Type.STRING, enum: ['High', 'Medium', 'Low'] },
+          rationale: { type: Type.STRING },
+        },
+        required: ['action', 'priority', 'rationale'],
+      },
+    },
     confidenceLimitations: { type: Type.ARRAY, items: { type: Type.STRING } },
   },
   required: [
+    'verdictHeadline',
     'executiveSummary',
     'aiExplanation',
+    'evidenceCrossCheck',
+    'keyTakeaways',
     'suspiciousIndicators',
     'technicalObservations',
     'recommendedNextSteps',
+    'verificationChecklist',
     'confidenceLimitations',
   ],
 };
@@ -55,11 +94,20 @@ function buildDeterministicSummary(options: {
 
   const isPartial = failedDetectors.length > 0 || geminiStatus === 'failed' || geminiStatus === 'partially_completed';
 
-  const suspiciousIndicators = scoring.evidenceSupportingAi.length > 0
-    ? scoring.evidenceSupportingAi
-    : detectors
-        .filter((d) => d.ran && d.rawSignalScore !== null && d.rawSignalScore >= 60)
-        .map((d) => `${d.methodName} (${d.rawSignalScore}/100): ${d.resultSummary}`);
+  const suspiciousIndicators =
+    scoring.evidenceSupportingAi.length > 0
+      ? scoring.evidenceSupportingAi
+      : detectors
+          .filter((d) => d.ran && d.rawSignalScore !== null && d.rawSignalScore >= 60)
+          .map((d) => `${d.methodName} (${d.rawSignalScore}/100): ${d.resultSummary}`);
+
+  const verdictHeadline = isPartial
+    ? `Partial ${mediaType} assessment (${scoring.classification}) — ${scoring.methodsPerformedCount} local detector(s) completed`
+    : scoring.classification === 'Likely human-created'
+      ? `Consistent with natural ${mediaType} capture (${scoring.aiLikelihoodScore}/100 Experimental)`
+      : scoring.classification === 'Likely AI-generated'
+        ? `Multiple synthetic-generation indicators detected (${scoring.aiLikelihoodScore}/100 Experimental)`
+        : `${scoring.classification} — ${scoring.evidenceStrength.toLowerCase()} technical evidence (${scoring.aiLikelihoodScore}/100 Experimental)`;
 
   const executiveSummary = isPartial
     ? `Partial forensic report compiled for this ${mediaType} specimen: ${scoring.methodsPerformedCount} local/independent detector(s) completed while ${failedDetectors.length} Gemini-backed detector(s) failed due to temporary API unavailability (${unavailableDetectors.length} additional method(s) unavailable in runtime). Based exclusively on completed checks, the classification is ${scoring.classification} (${scoring.aiLikelihoodScore}/100 Experimental, ${scoring.overallReliability} reliability).`
@@ -72,6 +120,47 @@ function buildDeterministicSummary(options: {
           : 'All completed deterministic local measurements and extracted artifacts are preserved below.'
       }`
     : `Narrative synthesis fell back to deterministic summary because upstream AI reasoning returned an error (${reason}). All local forensic metrics, evidence polarity buckets, and scoring breakdowns remain intact below.`;
+
+  const evidenceCrossCheck =
+    scoring.conflictingFindings.length > 0
+      ? `Cross-detector review flagged ${scoring.conflictingFindings.length} divergence(s) between completed methods. ${scoring.disagreementReasons[0] ?? 'Inspect individual detector scores alongside original capture provenance.'}`
+      : `Completed detectors (${scoring.methodsPerformedCount}) showed no direct contradiction: ${scoring.evidenceSupportingAi.length} AI-supporting signal(s) versus ${scoring.evidenceSupportingNaturalCapture.length} natural-capture signal(s) and ${scoring.neutralObservations.length} neutral observation(s).`;
+
+  const keyTakeaways: ForensicKeyTakeaway[] = [
+    {
+      title: 'Experimental Composite Estimate',
+      detail: `${scoring.aiLikelihoodScore}/100 (${scoring.classification}) with ${scoring.evidenceStrength} evidence strength across ${scoring.methodsPerformedCount} completed check(s).`,
+      polarity:
+        scoring.classification === 'Likely AI-generated'
+          ? 'ai_indicator'
+          : scoring.classification === 'Likely human-created'
+            ? 'natural_capture'
+            : 'caution',
+    },
+    ...(scoring.evidenceSupportingAi.length > 0
+      ? [
+          {
+            title: 'AI-Supporting Signals Flagged',
+            detail: scoring.evidenceSupportingAi[0],
+            polarity: 'ai_indicator' as const,
+          },
+        ]
+      : []),
+    ...(scoring.evidenceSupportingNaturalCapture.length > 0
+      ? [
+          {
+            title: 'Natural-Capture Characteristics',
+            detail: scoring.evidenceSupportingNaturalCapture[0],
+            polarity: 'natural_capture' as const,
+          },
+        ]
+      : []),
+    {
+      title: 'Pipeline Coverage & Provenance',
+      detail: `${scoring.completenessPercent}% pipeline completeness; ${unavailableDetectors.length} specialized method(s) disclosed as unavailable.`,
+      polarity: 'neutral',
+    },
+  ];
 
   const technicalObservations = [
     ...scoring.scoreExplanation,
@@ -95,7 +184,7 @@ function buildDeterministicSummary(options: {
   const recommendedNextSteps = [
     ...(isPartial
       ? [
-          'Use "Retry Gemini Analysis" to run the failed multimodal detectors once upstream Gemini demand subsides — extracted video frames and metadata are cached on disk and will be reused without repeating preprocessing.',
+          'Use "Retry Gemini Analysis" or "Enhance Report with AI" once upstream Gemini demand subsides — extracted artifacts are cached on disk and will be reused.',
         ]
       : []),
     ...(scoring.conflictingFindings.length > 0
@@ -105,6 +194,28 @@ function buildDeterministicSummary(options: {
       : []),
     'Verify original source provenance, capture device chain-of-custody, and unedited raw files where available.',
     'Review the completed deterministic telemetry (container metadata, C2PA markers, frame/pixel/acoustic signals) independently alongside human inspection.',
+  ];
+
+  const verificationChecklist: ForensicChecklistItem[] = [
+    {
+      action: isPartial
+        ? 'Re-run AI multimodal synthesis when upstream service is available'
+        : 'Request original camera or unedited export file',
+      priority: 'High',
+      rationale: isPartial
+        ? 'Completing failed multimodal checks improves overall evidence coverage without losing cached local telemetry.'
+        : 'Comparing original uncompressed files eliminates ambiguity caused by platform re-encoding or metadata stripping.',
+    },
+    {
+      action: 'Cross-check source chain of custody and timestamps',
+      priority: 'Medium',
+      rationale: 'Technical detectors estimate probability and should be corroborated with independent provenance checks.',
+    },
+    {
+      action: 'Inspect raw detector rows and media-specific telemetry below',
+      priority: 'Low',
+      rationale: 'Direct inspection of individual signal residuals and limitations prevents over-reliance on any single score.',
+    },
   ];
 
   const confidenceLimitations = [
@@ -121,9 +232,12 @@ function buildDeterministicSummary(options: {
   ];
 
   return {
+    verdictHeadline,
     executiveSummary,
     observedEvidence,
     aiExplanation,
+    evidenceCrossCheck,
+    keyTakeaways,
     suspiciousIndicators:
       suspiciousIndicators.length > 0
         ? suspiciousIndicators
@@ -138,6 +252,7 @@ function buildDeterministicSummary(options: {
     disagreementReasons: scoring.disagreementReasons,
     technicalObservations,
     recommendedNextSteps,
+    verificationChecklist,
     confidenceLimitations,
     modelUsed: 'Deterministic partial-report engine (Gemini unavailable)',
     generatedAt: new Date().toISOString(),
@@ -156,6 +271,9 @@ export async function generateForensicReportNarrative(options: {
   skipGeminiNarrative?: boolean;
   userContext?: AnalysisRecord['userContext'];
   originalSnapshot?: AnalysisRecord['originalSnapshot'];
+  audioProfile?: AnalysisRecord['audioProfile'];
+  videoTelemetry?: AnalysisRecord['videoTelemetry'];
+  imageVisualMetrics?: AnalysisRecord['imageVisualMetrics'];
 }): Promise<GeminiForensicSummary> {
   const {
     mediaType,
@@ -169,6 +287,9 @@ export async function generateForensicReportNarrative(options: {
     skipGeminiNarrative,
     userContext,
     originalSnapshot,
+    audioProfile,
+    videoTelemetry,
+    imageVisualMetrics,
   } = options;
 
   // Deterministic observed evidence list assembled strictly from real detector outputs (never generated by LLM)
@@ -212,7 +333,7 @@ export async function generateForensicReportNarrative(options: {
     )
     .map(
       (d) =>
-        `- ${d.methodName} [${d.status}, polarity=${d.signalPolarity ?? 'auto'}] (score: ${d.rawSignalScore ?? 'informational'}, reliability: ${d.reliability}): ${d.resultSummary} | Evidence: ${d.evidence.slice(0, 2).join(' ; ')}`,
+        `- ${d.methodName} [${d.status}, polarity=${d.signalPolarity ?? 'auto'}] (score: ${d.rawSignalScore ?? 'informational'}, reliability: ${d.reliability}): ${d.resultSummary} | Evidence: ${d.evidence.slice(0, 3).join(' ; ')}`,
     )
     .join('\n');
 
@@ -225,6 +346,29 @@ export async function generateForensicReportNarrative(options: {
     .filter((d) => d.status === 'unavailable')
     .map((d) => `- ${d.methodName}: ${d.resultSummary}`)
     .join('\n');
+
+  const mediaTelemetryLines: string[] = [];
+  if (audioProfile) {
+    mediaTelemetryLines.push(
+      `Audio Telemetry: centroid=${audioProfile.spectralCentroidHz ?? 'N/A'}Hz, silenceRatio=${(audioProfile.silenceRatio * 100).toFixed(1)}%, dynamicRange=${audioProfile.dynamicRangeDb}dB, noiseFloor=${audioProfile.noiseFloorDb ?? 'N/A'}dB, alignedSyntheticIndicators=${audioProfile.syntheticIndicatorCount ?? 0}.`,
+    );
+    if (audioProfile.detectedIndicators?.length) {
+      mediaTelemetryLines.push(`Audio Detected Evidence: ${audioProfile.detectedIndicators.join(' ; ')}`);
+    }
+    if (audioProfile.uncertainSignals?.length) {
+      mediaTelemetryLines.push(`Audio Uncertain Signals: ${audioProfile.uncertainSignals.join(' ; ')}`);
+    }
+  }
+  if (videoTelemetry) {
+    mediaTelemetryLines.push(
+      `Video Telemetry: ${videoTelemetry.extractedFramesCount} extracted frames, meanHistSim=${videoTelemetry.meanHistogramSimilarity ?? 'N/A'}, socialReencodeLikely=${Boolean(videoTelemetry.socialMediaReencodeLikely)}.`,
+    );
+  }
+  if (imageVisualMetrics) {
+    mediaTelemetryLines.push(
+      `Image Telemetry: aspect=${imageVisualMetrics.aspectRatio}, laplacianVar=${imageVisualMetrics.laplacianVariance}, elaMean=${imageVisualMetrics.elaMeanDiff}, quadrantSpread=${(imageVisualMetrics.quadrantNoiseSpread * 100).toFixed(1)}%.`,
+    );
+  }
 
   const userContextBlock = userContext
     ? [
@@ -246,17 +390,18 @@ export async function generateForensicReportNarrative(options: {
     : '';
 
   const prompt = [
-    'Synthesize a clear, balanced, non-exaggerated TruthLens forensic report summary based EXCLUSIVELY on the observed detector results below.',
+    'Synthesize an executive-grade, balanced, deeply informative TruthLens forensic report based EXCLUSIVELY on the observed detector results and telemetry below.',
     'DO NOT invent any new watermarks, EXIF tags, timestamps, C2PA credentials, or scores.',
     'Never claim 100% proof or definitive authorship. Never treat a failed API detector, missing metadata, or absent watermarks as proof of AI generation or authenticity.',
-    'Clearly acknowledge natural-capture observations when present, and explain WHY individual detectors disagreed if conflicting findings exist.',
+    'Clearly acknowledge natural-capture observations when present, and explain WHY individual detectors agreed or disagreed.',
     '',
     `File: ${metadata.fileName} (${mediaType}, ${metadata.detectedMime}, ${metadata.fileSizeBytes} bytes)`,
     `Overall Experimental AI-Likelihood Score: ${scoring.aiLikelihoodScore}/100`,
     `Classification: ${scoring.classification}`,
-    `Evidence Strength: ${scoring.evidenceStrength} | Overall Reliability: ${scoring.overallReliability}`,
+    `Evidence Strength: ${scoring.evidenceStrength} | Overall Reliability: ${scoring.overallReliability} | Completeness: ${scoring.completenessPercent}%`,
     `Gemini Multimodal Status: ${geminiStatus ?? 'completed'}`,
     samplingStrategy ? `Video Sampling Strategy: ${samplingStrategy}` : '',
+    ...mediaTelemetryLines,
     '',
     `Evidence Supporting AI Generation (${scoring.evidenceSupportingAi.length}):`,
     scoring.evidenceSupportingAi.length ? scoring.evidenceSupportingAi.map((e) => `- ${e}`).join('\n') : '- None observed',
@@ -281,11 +426,15 @@ export async function generateForensicReportNarrative(options: {
     userContextBlock,
     '',
     'Return structured JSON with:',
-    '- executiveSummary: 2-3 clear sentences explaining the classification, balancing AI-supporting vs natural-capture evidence, and (if user context was provided) clearly separating objectively detected findings from user-supplied context.',
-    '- aiExplanation: concise plain-English explanation of why the scoring engine produced this estimate and (if applicable) why individual detectors disagreed or what changed after reanalysis.',
+    '- verdictHeadline: crisp 1-sentence forensic headline (<= 16 words) capturing the core finding without overclaiming.',
+    '- executiveSummary: 2-3 clear sentences explaining the classification, balancing AI-supporting vs natural-capture evidence, and (if user context was provided) strictly separating objectively detected findings from unverified user context.',
+    '- aiExplanation: concise plain-English explanation of why the scoring engine produced this estimate and what drove the confidence level.',
+    '- evidenceCrossCheck: 2-3 sentences comparing deterministic local telemetry (metadata/pixels/frames/acoustics) against multimodal findings and noting agreement, tensions, or missing provenance.',
+    '- keyTakeaways: 3 to 4 crisp executive takeaway objects ({ title, detail, polarity }) summarizing the highest-signal findings across detectors.',
     '- suspiciousIndicators: bullet list of concrete AI/manipulation indicators observed (or explicit note that none stood out).',
     '- technicalObservations: concise technical notes grounded strictly in the telemetry above.',
     '- recommendedNextSteps: practical human verification steps.',
+    '- verificationChecklist: 3 prioritized actionable verification items ({ action, priority: High|Medium|Low, rationale }) specifically tailored to this file.',
     '- confidenceLimitations: clear limitations of this assessment.',
   ]
     .filter(Boolean)
@@ -295,15 +444,20 @@ export async function generateForensicReportNarrative(options: {
     const res = await runStructuredGeminiAnalysisWithMeta<GeminiNarrativeOutput>({
       parts: [{ text: prompt }],
       responseSchema: REPORT_NARRATIVE_SCHEMA,
-      thinkingLevel: ThinkingLevel.LOW,
-      timeoutMs: 28_000,
+      thinkingLevel: ThinkingLevel.MEDIUM,
+      timeoutMs: 32_000,
     });
     const narrative = res.data;
 
     return {
+      verdictHeadline: narrative.verdictHeadline?.trim() || undefined,
       executiveSummary: narrative.executiveSummary,
       observedEvidence,
       aiExplanation: narrative.aiExplanation,
+      evidenceCrossCheck: narrative.evidenceCrossCheck?.trim() || undefined,
+      keyTakeaways: Array.isArray(narrative.keyTakeaways)
+        ? narrative.keyTakeaways.slice(0, 4)
+        : undefined,
       suspiciousIndicators: Array.isArray(narrative.suspiciousIndicators)
         ? narrative.suspiciousIndicators
         : [],
@@ -317,6 +471,9 @@ export async function generateForensicReportNarrative(options: {
       recommendedNextSteps: Array.isArray(narrative.recommendedNextSteps)
         ? narrative.recommendedNextSteps
         : [],
+      verificationChecklist: Array.isArray(narrative.verificationChecklist)
+        ? narrative.verificationChecklist.slice(0, 4)
+        : undefined,
       confidenceLimitations: [
         'A detection score is an experimental estimate, not definitive proof of AI generation or human authorship.',
         'Absence of AI watermarks or C2PA metadata is neutral context and never establishes definitive authenticity.',

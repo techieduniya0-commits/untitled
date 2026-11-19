@@ -449,6 +449,51 @@ export function createApiApp(): Express {
     }),
   );
 
+  // On-demand AI forensic report synthesis enhancement (Gemini deep-dive grounded strictly in persisted evidence)
+  app.post(
+    '/api/analyses/:id/ai-enhance',
+    asyncHandler(async (req, res) => {
+      const record = await getAnalysisById(req.params.id);
+      if (!record) {
+        res.status(404).json({ ok: false, error: 'Analysis not found.', code: 'ANALYSIS_NOT_FOUND' });
+        return;
+      }
+      if (!record.scoring || !record.metadata) {
+        res.status(409).json({
+          ok: false,
+          error: 'Analysis telemetry is still processing and not ready for AI report synthesis.',
+          code: 'ANALYSIS_NOT_READY',
+        });
+        return;
+      }
+
+      const enhancedSummary = await generateForensicReportNarrative({
+        mediaType: record.mediaType,
+        metadata: record.metadata,
+        detectors: record.detectors,
+        watermarks: record.watermarks,
+        scoring: record.scoring,
+        samplingStrategy: record.videoSamplingStrategy,
+        geminiStatus: record.geminiStatus,
+        geminiFailureDetail: record.geminiFailureDetail,
+        skipGeminiNarrative: false,
+        userContext: record.userContext,
+        originalSnapshot: record.originalSnapshot,
+        audioProfile: record.audioProfile,
+        videoTelemetry: record.videoTelemetry,
+        imageVisualMetrics: record.imageVisualMetrics,
+      });
+
+      const updated: typeof record = {
+        ...record,
+        geminiSummary: enhancedSummary,
+        geminiModelUsed: enhancedSummary.modelUsed || record.geminiModelUsed,
+      };
+      await upsertAnalysis(updated);
+      res.status(200).json({ ok: true, analysis: updated });
+    }),
+  );
+
   // Delete analysis and purge stored media
   app.delete(
     '/api/analyses/:id',
