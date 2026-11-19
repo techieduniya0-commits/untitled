@@ -485,9 +485,9 @@ export default function App() {
         >
           <motion.div
             key={`${activeTab}-${activeAnalysisId ?? ''}-${selectedReportId ?? ''}`}
-            initial={prefersReducedMotion ? false : { opacity: 0, y: 10 }}
+            initial={prefersReducedMotion ? false : { opacity: 0, y: 5 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: MOTION_DURATION.fast + 0.1, ease: MOTION_EASE.apple }}
+            transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE.apple }}
           >
             {appError && (
               <div

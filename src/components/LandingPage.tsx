@@ -28,17 +28,24 @@ const OPTICS_SPECIMEN_IMG =
   '/src/assets/images/forensic_specimen_optics_1795085234710.jpg';
 
 const NAV_LINKS = [
-  { href: '#home', label: 'Home' },
-  { href: '#features', label: 'Features' },
-  { href: '#how-it-works', label: 'How It Works' },
-  { href: '#about', label: 'About' },
+  { id: 'home', href: '#home', label: 'Home' },
+  { id: 'features', href: '#features', label: 'Features' },
+  { id: 'how-it-works', href: '#how-it-works', label: 'How It Works' },
+  { id: 'about', href: '#about', label: 'About' },
 ] as const;
+
+type LandingSectionId = (typeof NAV_LINKS)[number]['id'];
 
 export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
   const [opticsImgError, setOpticsImgError] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
+  const [activeSection, setActiveSection] = useState<LandingSectionId>('home');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const heroSectionRef = useRef<HTMLElement | null>(null);
+  const heroRectRef = useRef<{ left: number; top: number; width: number; height: number } | null>(
+    null,
+  );
+  const scrollAnimRafRef = useRef<number>(0);
   const landingContentRef = useRef<HTMLDivElement | null>(null);
   const prefersReducedMotion = Boolean(useReducedMotion());
 
@@ -51,13 +58,125 @@ export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
   const glowTranslateX = useTransform(smoothX, [-1, 1], [-18, 18]);
   const glowTranslateY = useTransform(smoothY, [-1, 1], [-14, 14]);
 
-  useEffect(() => {
-    const handleScroll = () => {
-      setIsScrolled(window.scrollY > 20);
+  // Fast, interruptible ease-out section switching (~320ms max regardless of scroll distance)
+  const scrollToSection = (sectionId: LandingSectionId, e?: MouseEvent<HTMLElement>) => {
+    if (e) e.preventDefault();
+    setMobileMenuOpen(false);
+    setActiveSection(sectionId);
+
+    // Yield magnifier immediately during section transition
+    window.dispatchEvent(new CustomEvent('tl:nav-jump'));
+
+    if (scrollAnimRafRef.current) {
+      window.cancelAnimationFrame(scrollAnimRafRef.current);
+      scrollAnimRafRef.current = 0;
+    }
+
+    const targetY =
+      sectionId === 'home'
+        ? 0
+        : (() => {
+            const targetEl = document.getElementById(sectionId);
+            if (!targetEl) return 0;
+            const rect = targetEl.getBoundingClientRect();
+            return Math.max(0, Math.round(rect.top + window.scrollY - 68));
+          })();
+
+    if (window.location.hash !== `#${sectionId}`) {
+      window.history.replaceState(null, '', `#${sectionId}`);
+    }
+
+    const startY = window.scrollY;
+    const distance = targetY - startY;
+
+    if (prefersReducedMotion || Math.abs(distance) < 16) {
+      window.scrollTo(0, targetY);
+      return;
+    }
+
+    const duration = Math.min(340, Math.max(180, Math.abs(distance) * 0.14));
+    const startTime = performance.now();
+
+    const cancelOnUserInput = () => {
+      if (scrollAnimRafRef.current) {
+        window.cancelAnimationFrame(scrollAnimRafRef.current);
+        scrollAnimRafRef.current = 0;
+      }
+      cleanupListeners();
     };
-    handleScroll();
+
+    const cleanupListeners = () => {
+      window.removeEventListener('wheel', cancelOnUserInput);
+      window.removeEventListener('touchstart', cancelOnUserInput);
+      window.removeEventListener('keydown', cancelOnUserInput);
+    };
+
+    window.addEventListener('wheel', cancelOnUserInput, { passive: true });
+    window.addEventListener('touchstart', cancelOnUserInput, { passive: true });
+    window.addEventListener('keydown', cancelOnUserInput, { passive: true });
+
+    const step = (now: number) => {
+      const elapsed = now - startTime;
+      const t = Math.min(1, elapsed / duration);
+      // Fast quintic ease-out: snaps crisply toward destination without sluggish tail
+      const eased = 1 - Math.pow(1 - t, 3);
+      window.scrollTo(0, Math.round(startY + distance * eased));
+
+      if (t < 1) {
+        scrollAnimRafRef.current = window.requestAnimationFrame(step);
+      } else {
+        scrollAnimRafRef.current = 0;
+        cleanupListeners();
+      }
+    };
+
+    scrollAnimRafRef.current = window.requestAnimationFrame(step);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (scrollAnimRafRef.current) {
+        window.cancelAnimationFrame(scrollAnimRafRef.current);
+      }
+    };
+  }, []);
+
+  // Passive header elevation check (only flips React state across the 20px threshold)
+  useEffect(() => {
+    let lastState = window.scrollY > 20;
+    setIsScrolled(lastState);
+    const handleScroll = () => {
+      const next = window.scrollY > 20;
+      if (next !== lastState) {
+        lastState = next;
+        setIsScrolled(next);
+      }
+    };
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  // Lightweight IntersectionObserver for active nav link highlighting (zero scroll-handler work)
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') return;
+    const sectionEls = NAV_LINKS.map((l) => document.getElementById(l.id)).filter(
+      (el): el is HTMLElement => Boolean(el),
+    );
+    if (sectionEls.length === 0) return;
+
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting && entry.target.id) {
+            setActiveSection(entry.target.id as LandingSectionId);
+          }
+        }
+      },
+      { rootMargin: '-32% 0px -55% 0px', threshold: 0 },
+    );
+
+    for (const el of sectionEls) io.observe(el);
+    return () => io.disconnect();
   }, []);
 
   useEffect(() => {
@@ -69,9 +188,19 @@ export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [mobileMenuOpen]);
 
+  const handleHeroMouseEnter = (e: MouseEvent<HTMLElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    heroRectRef.current = { left: r.left, top: r.top, width: r.width, height: r.height };
+  };
+
   const handleHeroMouseMove = (e: MouseEvent<HTMLElement>) => {
     if (prefersReducedMotion) return;
-    const rect = e.currentTarget.getBoundingClientRect();
+    let rect = heroRectRef.current;
+    if (!rect || rect.width === 0 || rect.height === 0) {
+      const r = e.currentTarget.getBoundingClientRect();
+      rect = { left: r.left, top: r.top, width: r.width, height: r.height };
+      heroRectRef.current = rect;
+    }
     if (rect.width === 0 || rect.height === 0) return;
     const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     const ny = ((e.clientY - rect.top) / rect.height) * 2 - 1;
@@ -80,24 +209,25 @@ export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
   };
 
   const handleHeroMouseLeave = () => {
+    heroRectRef.current = null;
     pointerX.set(0);
     pointerY.set(0);
   };
 
   return (
     <div className="relative min-h-screen text-[#0F172A] overflow-x-clip">
-      {/* Strict 3-Zone Top Bar Contract — Frosted Translucent White Glass Over Continuous Gradient */}
+      {/* Strict 3-Zone Top Bar Contract — Fast Translucent White Glass Over Continuous Gradient */}
       <header
-        className={`fixed top-0 inset-x-0 z-40 border-b backdrop-blur-xl transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+        className={`fixed top-0 inset-x-0 z-40 border-b backdrop-blur-md transition-[background-color,border-color,box-shadow] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] ${
           isScrolled
-            ? 'bg-white/82 border-[#D4E2F7] shadow-[0_8px_28px_-14px_rgba(30,58,138,0.14)]'
-            : 'bg-white/55 border-[#DBE7F8]/70'
+            ? 'bg-white/90 border-[#D4E2F7] shadow-[0_8px_24px_-14px_rgba(30,58,138,0.14)]'
+            : 'bg-white/70 border-[#DBE7F8]/70'
         }`}
       >
         <div className="max-w-[1240px] mx-auto px-6 h-16 flex items-center justify-between gap-8">
           <a
             href="#home"
-            onClick={() => setMobileMenuOpen(false)}
+            onClick={(e) => scrollToSection('home', e)}
             className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7C3AED] rounded-md"
           >
             <TruthLensLogo variant="light" />
@@ -107,15 +237,23 @@ export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
             aria-label="Primary navigation"
             className="hidden md:flex items-center gap-8 text-[13.5px] font-medium"
           >
-            {NAV_LINKS.map((link) => (
-              <a
-                key={link.href}
-                href={link.href}
-                className="relative py-1 whitespace-nowrap shrink-0 text-[#475569] hover:text-[#0F172A] transition-colors duration-200 after:absolute after:left-0 after:right-0 after:-bottom-0.5 after:h-[1.5px] after:origin-left after:scale-x-0 after:bg-gradient-to-r after:from-[#3B82F6] after:to-[#7C3AED] after:transition-transform after:duration-200 hover:after:scale-x-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7C3AED] rounded-sm"
-              >
-                {link.label}
-              </a>
-            ))}
+            {NAV_LINKS.map((link) => {
+              const isActive = activeSection === link.id;
+              return (
+                <a
+                  key={link.href}
+                  href={link.href}
+                  onClick={(e) => scrollToSection(link.id, e)}
+                  className={`relative py-1 whitespace-nowrap shrink-0 transition-colors duration-150 after:absolute after:left-0 after:right-0 after:-bottom-0.5 after:h-[1.5px] after:origin-left after:bg-gradient-to-r after:from-[#3B82F6] after:to-[#7C3AED] after:transition-transform after:duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7C3AED] rounded-sm ${
+                    isActive
+                      ? 'text-[#0F172A] font-semibold after:scale-x-100'
+                      : 'text-[#475569] hover:text-[#0F172A] after:scale-x-0 hover:after:scale-x-100'
+                  }`}
+                >
+                  {link.label}
+                </a>
+              );
+            })}
           </nav>
 
           <div className="flex items-center gap-3 shrink-0">
@@ -133,7 +271,7 @@ export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
               aria-label={mobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
               aria-expanded={mobileMenuOpen}
               onClick={() => setMobileMenuOpen((open) => !open)}
-              className="md:hidden inline-flex items-center justify-center w-10 h-10 rounded-lg border border-[#CBDDF8] bg-white/80 text-[#172554] hover:bg-white transition-colors cursor-pointer"
+              className="md:hidden inline-flex items-center justify-center w-10 h-10 rounded-lg border border-[#CBDDF8] bg-white/85 text-[#172554] hover:bg-white transition-colors cursor-pointer"
             >
               {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
@@ -142,13 +280,17 @@ export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
 
         {/* Responsive Mobile Drawer */}
         {mobileMenuOpen && (
-          <div className="md:hidden border-t border-[#DBE7F8] bg-white/95 px-6 py-4 space-y-1 backdrop-blur-xl">
+          <div className="md:hidden border-t border-[#DBE7F8] bg-white/95 px-6 py-4 space-y-1">
             {NAV_LINKS.map((link) => (
               <a
                 key={link.href}
                 href={link.href}
-                onClick={() => setMobileMenuOpen(false)}
-                className="block py-2.5 text-sm font-medium text-[#334155] hover:text-[#0F172A] rounded-lg transition-colors"
+                onClick={(e) => scrollToSection(link.id, e)}
+                className={`block py-2.5 text-sm font-medium rounded-lg transition-colors ${
+                  activeSection === link.id
+                    ? 'text-[#5B21B6] font-semibold'
+                    : 'text-[#334155] hover:text-[#0F172A]'
+                }`}
               >
                 {link.label}
               </a>
@@ -179,9 +321,10 @@ export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
         <section
           id="home"
           ref={heroSectionRef}
+          onMouseEnter={handleHeroMouseEnter}
           onMouseMove={handleHeroMouseMove}
           onMouseLeave={handleHeroMouseLeave}
-          className="relative overflow-hidden pt-28 pb-20 lg:pt-32 lg:pb-24 min-h-[min(100vh,860px)] flex items-center"
+          className="tl-section-opt relative overflow-hidden pt-28 pb-20 lg:pt-32 lg:pb-24 min-h-[min(100vh,860px)] flex items-center"
         >
           {/* Subtle Architectural Precision Grid */}
           <div aria-hidden="true" className="pointer-events-none absolute inset-0 hero-tech-grid" />
@@ -194,7 +337,7 @@ export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 lg:gap-10 items-center">
               {/* Left Column: Apple-Inspired Typography & Signature CTAs */}
               <div className="relative lg:col-span-6 flex flex-col justify-center">
-                {/* Soft Pale-Blue Ambient Glow Behind Heading with Gentle Parallax */}
+                {/* Soft Pale-Blue Ambient Glow Behind Heading with Gentle Parallax (pure radial gradient, no blur filter) */}
                 <motion.div
                   aria-hidden="true"
                   style={
@@ -202,13 +345,13 @@ export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
                       ? undefined
                       : { x: glowTranslateX, y: glowTranslateY }
                   }
-                  className="pointer-events-none absolute -top-12 -left-12 w-[420px] h-[280px] rounded-full blur-[68px] opacity-80"
+                  className="pointer-events-none absolute -top-20 -left-20 w-[520px] h-[360px] rounded-full opacity-85"
                 >
                   <div
                     className="w-full h-full rounded-full"
                     style={{
                       background:
-                        'radial-gradient(ellipse at center, rgba(147, 197, 253, 0.42) 0%, rgba(196, 181, 253, 0.24) 52%, transparent 78%)',
+                        'radial-gradient(ellipse at center, rgba(147, 197, 253, 0.34) 0%, rgba(196, 181, 253, 0.18) 38%, rgba(238, 246, 255, 0.06) 62%, transparent 76%)',
                     }}
                   />
                 </motion.div>
@@ -283,7 +426,11 @@ export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
                     <ArrowRight className="w-4 h-4 transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:translate-x-1" />
                   </PremiumButton>
 
-                  <PremiumButton variant="secondary" href="#how-it-works">
+                  <PremiumButton
+                    variant="secondary"
+                    href="#how-it-works"
+                    onClick={(e) => scrollToSection('how-it-works', e)}
+                  >
                     <span>Explore How It Works</span>
                     <ArrowRight className="w-4 h-4 text-[#6D28D9] transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:translate-x-1" />
                   </PremiumButton>
@@ -336,7 +483,7 @@ export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
         </section>
 
         {/* Supported Media Types — Seamless Over Global White/Pale-Blue Gradient */}
-        <section className="py-20 border-b border-[#DCE8F8]/80">
+        <section className="tl-section-opt py-20 border-b border-[#DCE8F8]/80">
           <div className="max-w-[1200px] mx-auto px-6">
             <ScrollReveal>
               <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-10">
@@ -420,7 +567,7 @@ export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
         </section>
 
         {/* Detection Capabilities — Asymmetric Bento Over Continuous Canvas */}
-        <section id="features" className="py-22 border-b border-[#DCE8F8]/80">
+        <section id="features" className="tl-section-opt py-22 border-b border-[#DCE8F8]/80">
           <div className="max-w-[1200px] mx-auto px-6">
             <ScrollReveal>
               <div className="max-w-2xl mb-12">
@@ -524,7 +671,7 @@ export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
         </section>
 
         {/* How It Works — 4-Stage Pipeline */}
-        <section id="how-it-works" className="py-22 border-b border-[#DCE8F8]/80">
+        <section id="how-it-works" className="tl-section-opt py-22 border-b border-[#DCE8F8]/80">
           <div className="max-w-[1200px] mx-auto px-6">
             <ScrollReveal>
               <div className="max-w-2xl mb-12">
@@ -569,7 +716,7 @@ export function LandingPage({ onEnterWorkspace }: LandingPageProps) {
         </section>
 
         {/* Technology Overview & Epistemic Transparency */}
-        <section id="about" className="py-22 border-b border-[#DCE8F8]/80">
+        <section id="about" className="tl-section-opt py-22 border-b border-[#DCE8F8]/80">
           <div className="max-w-[1200px] mx-auto px-6">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 items-stretch">
               <ScrollReveal className="lg:col-span-5">

@@ -10,39 +10,60 @@ interface LandingMagnifierProps {
 
 /**
  * Real interactive optical magnifying glass — mounted EXCLUSIVELY on the TruthLens Landing Page.
- * - Renders a live synchronized 1.65× optically zoomed mirror of the exact landing page content
- *   underneath the circular glass lens.
- * - Clones the target subtree once on mount + resize (never during pointermove) and updates only
- *   compositor GPU transforms per frame for silky 60/120Hz real-time tracking with zero jitter.
- * - Automatically stays aligned during mouse movement and vertical scrolling.
- * - Strictly pointer-events-none so buttons, links, and scroll never get blocked.
+ * Performance-engineered for zero lag across devices:
+ * - Disabled automatically on touch/mobile/reduced-motion devices.
+ * - Clones the target subtree once on mount + resize and strips heavy GPU effects
+ *   (backdrop-filter, blur filters, CSS animations, canvases) inside the clone so the browser
+ *   never double-composites frosted glass layers.
+ * - Zero getBoundingClientRect() calls inside requestAnimationFrame (uses cached document offsets
+ *   + window.scrollY).
+ * - On-demand RAF loop: pauses completely when settled or hidden (visibility: hidden), and yields
+ *   immediately during section navigation jumps ('tl:nav-jump') for instant, lag-free switching.
  */
 export function LandingMagnifier({ targetRef }: LandingMagnifierProps) {
-  const [disabled, setDisabled] = useState(false);
+  const [disabled, setDisabled] = useState(true);
 
   const rootRef = useRef<HTMLDivElement | null>(null);
   const zoomLayerRef = useRef<HTMLDivElement | null>(null);
   const specularRef = useRef<HTMLDivElement | null>(null);
+  const cachedOffsetRef = useRef({ left: 0, top: 0 });
 
   useEffect(() => {
     const mqMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
     const mqCoarse = window.matchMedia('(pointer: coarse)');
-    const check = () => setDisabled(mqMotion.matches || mqCoarse.matches);
+    const mqNoHover = window.matchMedia('(hover: none)');
+    const mqSmall = window.matchMedia('(max-width: 767px)');
+    const check = () =>
+      setDisabled(mqMotion.matches || mqCoarse.matches || mqNoHover.matches || mqSmall.matches);
     check();
     mqMotion.addEventListener('change', check);
     mqCoarse.addEventListener('change', check);
+    mqNoHover.addEventListener('change', check);
+    mqSmall.addEventListener('change', check);
     return () => {
       mqMotion.removeEventListener('change', check);
       mqCoarse.removeEventListener('change', check);
+      mqNoHover.removeEventListener('change', check);
+      mqSmall.removeEventListener('change', check);
     };
   }, []);
 
-  // Build and maintain a clean non-interactive mirror of the landing page content for real 1.65× zoom
+  // Build and maintain a lightweight, GPU-friendly mirror of the landing page for real 1.65× zoom
   useEffect(() => {
     if (disabled) return;
     const targetEl = targetRef.current;
     const zoomHost = zoomLayerRef.current;
     if (!targetEl || !zoomHost) return;
+
+    const updateCachedOffset = () => {
+      const src = targetRef.current;
+      if (!src) return;
+      const rect = src.getBoundingClientRect();
+      cachedOffsetRef.current = {
+        left: rect.left + window.scrollX,
+        top: rect.top + window.scrollY,
+      };
+    };
 
     const rebuildClone = () => {
       const src = targetRef.current;
@@ -52,6 +73,11 @@ export function LandingMagnifier({ targetRef }: LandingMagnifierProps) {
       const rect = src.getBoundingClientRect();
       if (rect.width <= 0) return;
 
+      cachedOffsetRef.current = {
+        left: rect.left + window.scrollX,
+        top: rect.top + window.scrollY,
+      };
+
       const clone = src.cloneNode(true) as HTMLElement;
       clone.setAttribute('aria-hidden', 'true');
       clone.style.width = `${rect.width}px`;
@@ -59,15 +85,39 @@ export function LandingMagnifier({ targetRef }: LandingMagnifierProps) {
       clone.style.margin = '0';
       clone.style.pointerEvents = 'none';
       clone.style.userSelect = 'none';
+      clone.style.contain = 'layout style';
 
-      // Strip IDs to avoid duplicate DOM IDs, remove animated canvases, and reveal scroll-animated sections
+      // Strip IDs, animated canvases, and heavy GPU filters/animations so the clone is ultra-cheap to paint
       clone.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
       clone.querySelectorAll('canvas').forEach((el) => el.remove());
+
+      clone.querySelectorAll('.tl-glass-panel').forEach((el) => {
+        const htmlEl = el as HTMLElement;
+        htmlEl.style.backdropFilter = 'none';
+        htmlEl.style.setProperty('-webkit-backdrop-filter', 'none');
+        htmlEl.style.background = 'rgba(255, 255, 255, 0.94)';
+      });
+
+      clone
+        .querySelectorAll(
+          '[class*="backdrop-blur"], [class*="blur-"], .animate-hero-float, .tl-animated-gradient-text',
+        )
+        .forEach((el) => {
+          const htmlEl = el as HTMLElement;
+          htmlEl.style.backdropFilter = 'none';
+          htmlEl.style.setProperty('-webkit-backdrop-filter', 'none');
+          htmlEl.style.animation = 'none';
+          if (htmlEl.className && String(htmlEl.className).includes('blur-[')) {
+            htmlEl.style.display = 'none';
+          }
+        });
+
       clone.querySelectorAll('[data-scroll-reveal="true"]').forEach((el) => {
         const htmlEl = el as HTMLElement;
         htmlEl.style.opacity = '1';
         htmlEl.style.transform = 'none';
       });
+
       clone.querySelectorAll('h1 span, p, div').forEach((el) => {
         const htmlEl = el as HTMLElement;
         if (htmlEl.style.opacity === '0') {
@@ -79,14 +129,14 @@ export function LandingMagnifier({ targetRef }: LandingMagnifierProps) {
       host.replaceChildren(clone);
     };
 
-    // Initial build + delayed refresh after Framer Motion hero entrance settles
     rebuildClone();
-    const settleTimer = window.setTimeout(rebuildClone, 950);
+    const settleTimer = window.setTimeout(rebuildClone, 850);
 
     let resizeTimer: number | null = null;
     const handleResize = () => {
+      updateCachedOffset();
       if (resizeTimer) window.clearTimeout(resizeTimer);
-      resizeTimer = window.setTimeout(rebuildClone, 180);
+      resizeTimer = window.setTimeout(rebuildClone, 240);
     };
 
     window.addEventListener('resize', handleResize, { passive: true });
@@ -105,7 +155,7 @@ export function LandingMagnifier({ targetRef }: LandingMagnifierProps) {
     };
   }, [disabled, targetRef]);
 
-  // Smooth real-time pointer + scroll tracking synced with zoomed lens optics
+  // On-demand pointer + scroll tracking (zero idle RAF cost, zero layout thrashing)
   useEffect(() => {
     if (disabled) return;
 
@@ -114,22 +164,37 @@ export function LandingMagnifier({ targetRef }: LandingMagnifierProps) {
     let visible = false;
     let targetOpacity = 0;
     let currentOpacity = 0;
+    let suppressUntil = 0;
 
     let targetX = -300;
     let targetY = -300;
     let currentX = -300;
     let currentY = -300;
+    let lastScrollY = window.scrollY;
+    let lastScrollX = window.scrollX;
+
+    const scheduleTick = () => {
+      if (rafId !== 0) return;
+      lastTime = performance.now();
+      rafId = window.requestAnimationFrame(tick);
+    };
 
     const onPointerMove = (e: PointerEvent) => {
       if (e.pointerType === 'touch') {
         targetOpacity = 0;
+        scheduleTick();
         return;
       }
       targetX = e.clientX;
       targetY = e.clientY;
 
-      const src = targetRef.current;
-      const topBoundary = src ? Math.max(66, src.getBoundingClientRect().top) : 66;
+      if (performance.now() < suppressUntil) {
+        targetOpacity = 0;
+        scheduleTick();
+        return;
+      }
+
+      const topBoundary = Math.max(68, cachedOffsetRef.current.top - window.scrollY);
       const insideLandingBody = e.clientY >= topBoundary;
 
       if (!visible && insideLandingBody) {
@@ -138,18 +203,38 @@ export function LandingMagnifier({ targetRef }: LandingMagnifierProps) {
         visible = true;
       }
       targetOpacity = insideLandingBody ? 1 : 0;
+      scheduleTick();
+    };
+
+    const onScroll = () => {
+      if (!visible && currentOpacity <= 0.003) return;
+      scheduleTick();
+    };
+
+    const onNavJump = () => {
+      // Yield immediately during section switching so navigation is 100% lag-free
+      suppressUntil = performance.now() + 420;
+      targetOpacity = 0;
+      currentOpacity = 0;
+      visible = false;
+      if (rootRef.current) {
+        rootRef.current.style.opacity = '0';
+        rootRef.current.style.visibility = 'hidden';
+      }
     };
 
     const onLeave = () => {
       targetOpacity = 0;
+      scheduleTick();
     };
 
     const tick = (now: number) => {
+      rafId = 0;
       const dt = Math.min(0.05, Math.max(0.001, (now - lastTime) / 1000));
       lastTime = now;
 
-      const posFactor = 1 - Math.exp(-26 * dt);
-      const opacityFactor = 1 - Math.exp(-14 * dt);
+      const posFactor = 1 - Math.exp(-28 * dt);
+      const opacityFactor = 1 - Math.exp(-16 * dt);
 
       const prevX = currentX;
       const prevY = currentY;
@@ -160,23 +245,33 @@ export function LandingMagnifier({ targetRef }: LandingMagnifierProps) {
       if (currentOpacity < 0.004 && targetOpacity === 0) {
         currentOpacity = 0;
         visible = false;
+      } else if (Math.abs(targetOpacity - currentOpacity) < 0.004) {
+        currentOpacity = targetOpacity;
       }
 
-      if (rootRef.current) {
-        rootRef.current.style.opacity = currentOpacity.toFixed(3);
-        if (currentOpacity > 0.003) {
+      const root = rootRef.current;
+      if (root) {
+        if (currentOpacity <= 0.003) {
+          root.style.opacity = '0';
+          root.style.visibility = 'hidden';
+        } else {
+          root.style.visibility = 'visible';
+          root.style.opacity = currentOpacity.toFixed(3);
           const lx = currentX - LENS_HALF;
           const ly = currentY - LENS_HALF;
-          rootRef.current.style.transform = `translate3d(${lx.toFixed(2)}px, ${ly.toFixed(2)}px, 0)`;
+          root.style.transform = `translate3d(${lx.toFixed(2)}px, ${ly.toFixed(2)}px, 0)`;
         }
       }
 
-      // Align cloned page content inside the circular aperture so the exact point underneath
-      // (currentX, currentY) maps pixel-accurately to the center (LENS_HALF, LENS_HALF) at 1.65×
-      if (zoomLayerRef.current && targetRef.current && currentOpacity > 0.003) {
-        const rect = targetRef.current.getBoundingClientRect();
-        const localX = currentX - rect.left;
-        const localY = currentY - rect.top;
+      const scrollX = window.scrollX;
+      const scrollY = window.scrollY;
+      const scrolled = scrollX !== lastScrollX || scrollY !== lastScrollY;
+      lastScrollX = scrollX;
+      lastScrollY = scrollY;
+
+      if (zoomLayerRef.current && currentOpacity > 0.003) {
+        const localX = currentX - (cachedOffsetRef.current.left - scrollX);
+        const localY = currentY - (cachedOffsetRef.current.top - scrollY);
         const tx = LENS_HALF - localX * ZOOM_FACTOR;
         const ty = LENS_HALF - localY * ZOOM_FACTOR;
         zoomLayerRef.current.style.transform = `translate3d(${tx.toFixed(2)}px, ${ty.toFixed(2)}px, 0) scale(${ZOOM_FACTOR})`;
@@ -188,21 +283,31 @@ export function LandingMagnifier({ targetRef }: LandingMagnifierProps) {
         specularRef.current.style.transform = `translate3d(${vx.toFixed(2)}px, ${vy.toFixed(2)}px, 0)`;
       }
 
-      rafId = window.requestAnimationFrame(tick);
+      // Continue RAF only while lens is still moving, fading, or scrolling
+      const posSettled =
+        Math.abs(targetX - currentX) < 0.15 && Math.abs(targetY - currentY) < 0.15;
+      const opacitySettled = Math.abs(targetOpacity - currentOpacity) < 0.004;
+
+      if (!posSettled || !opacitySettled || (scrolled && currentOpacity > 0.003)) {
+        rafId = window.requestAnimationFrame(tick);
+      }
     };
 
     window.addEventListener('pointermove', onPointerMove, { passive: true });
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('tl:nav-jump', onNavJump);
     document.addEventListener('mouseleave', onLeave);
     window.addEventListener('blur', onLeave);
-    rafId = window.requestAnimationFrame(tick);
 
     return () => {
-      window.cancelAnimationFrame(rafId);
+      if (rafId !== 0) window.cancelAnimationFrame(rafId);
       window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('tl:nav-jump', onNavJump);
       document.removeEventListener('mouseleave', onLeave);
       window.removeEventListener('blur', onLeave);
     };
-  }, [disabled, targetRef]);
+  }, [disabled]);
 
   if (disabled) return null;
 
@@ -214,15 +319,16 @@ export function LandingMagnifier({ targetRef }: LandingMagnifierProps) {
       style={{
         width: LENS_SIZE,
         height: LENS_SIZE,
+        visibility: 'hidden',
+        contain: 'layout style',
       }}
     >
-      {/* Subtle Pale-Blue & Violet Optical Halo */}
+      {/* Subtle Pale-Blue & Violet Optical Halo (pure radial gradient, no expensive blur filter) */}
       <div
-        className="absolute -inset-2.5 rounded-full"
+        className="absolute -inset-4 rounded-full"
         style={{
           background:
-            'radial-gradient(circle, rgba(96, 165, 250, 0.22) 45%, rgba(124, 58, 237, 0.16) 72%, transparent 100%)',
-          filter: 'blur(9px)',
+            'radial-gradient(circle, rgba(96, 165, 250, 0.2) 48%, rgba(124, 58, 237, 0.12) 68%, transparent 86%)',
         }}
       />
 
@@ -246,10 +352,11 @@ export function LandingMagnifier({ targetRef }: LandingMagnifierProps) {
       <div
         className="relative w-full h-full rounded-full overflow-hidden"
         style={{
+          contain: 'strict',
           background:
             'linear-gradient(155deg, #FFFFFF 0%, #F4F9FF 50%, #EAF3FF 100%)',
           boxShadow:
-            '0 18px 38px -12px rgba(30, 58, 138, 0.28), 0 6px 16px -4px rgba(124, 58, 237, 0.2), inset 0 1.5px 2px rgba(255, 255, 255, 0.95)',
+            '0 16px 32px -12px rgba(30, 58, 138, 0.26), 0 6px 14px -4px rgba(124, 58, 237, 0.18), inset 0 1.5px 2px rgba(255, 255, 255, 0.95)',
         }}
       >
         {/* Synchronized Zoomed DOM Layer */}
@@ -264,14 +371,14 @@ export function LandingMagnifier({ targetRef }: LandingMagnifierProps) {
           className="absolute -inset-2 rounded-full pointer-events-none will-change-transform"
           style={{
             background:
-              'radial-gradient(ellipse 64% 30% at 34% 20%, rgba(255, 255, 255, 0.52) 0%, rgba(255, 255, 255, 0.08) 54%, transparent 78%)',
+              'radial-gradient(ellipse 64% 30% at 34% 20%, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0.08) 54%, transparent 78%)',
           }}
         />
         <div
           className="absolute inset-0 rounded-full pointer-events-none"
           style={{
             boxShadow:
-              'inset 0 0 16px rgba(37, 99, 235, 0.16), inset 0 1px 2px rgba(255, 255, 255, 0.9)',
+              'inset 0 0 14px rgba(37, 99, 235, 0.14), inset 0 1px 2px rgba(255, 255, 255, 0.9)',
           }}
         />
 

@@ -123,7 +123,7 @@ export function WorkspaceShell({
   return (
     <div className="relative z-10 min-h-screen text-[#0F172A] flex">
       {/* Desktop Frosted Glass Sidebar — Blends Into Continuous White/Pale-Blue Gradient */}
-      <aside className="hidden lg:block w-[252px] shrink-0 bg-white/72 backdrop-blur-xl border-r border-[#DCE8F8]/85 sticky top-0 h-screen">
+      <aside className="hidden lg:block w-[252px] shrink-0 bg-white/84 backdrop-blur-md border-r border-[#DCE8F8]/85 sticky top-0 h-screen">
         {sidebarContent}
       </aside>
 
@@ -131,10 +131,10 @@ export function WorkspaceShell({
       {mobileMenuOpen && (
         <div className="fixed inset-0 z-50 lg:hidden flex">
           <div
-            className="fixed inset-0 bg-[#0F172A]/25 backdrop-blur-xs"
+            className="fixed inset-0 bg-[#0F172A]/25"
             onClick={() => setMobileMenuOpen(false)}
           />
-          <aside className="relative w-[264px] max-w-[85vw] bg-white/95 backdrop-blur-xl h-full border-r border-[#DCE8F8] z-10">
+          <aside className="relative w-[264px] max-w-[85vw] bg-white/95 h-full border-r border-[#DCE8F8] z-10">
             {sidebarContent}
           </aside>
         </div>
@@ -142,7 +142,7 @@ export function WorkspaceShell({
 
       {/* Main Content Canvas */}
       <div className="flex-1 min-w-0 flex flex-col">
-        <header className="h-16 bg-white/70 backdrop-blur-xl border-b border-[#DCE8F8]/85 px-4 sm:px-8 flex items-center justify-between gap-4 sticky top-0 z-20">
+        <header className="h-16 bg-white/84 backdrop-blur-md border-b border-[#DCE8F8]/85 px-4 sm:px-8 flex items-center justify-between gap-4 sticky top-0 z-20">
           <div className="flex items-center gap-3 min-w-0">
             <button
               type="button"
