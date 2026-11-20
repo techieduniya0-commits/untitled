@@ -5,11 +5,9 @@ import { promisify } from 'node:util';
 import { Type, ThinkingLevel } from '@google/genai';
 import sharp from 'sharp';
 import type {
-  AudioProfile,
   DetectorResult,
   EvidencePolarity,
   ExtractedMetadata,
-  ImageVisualMetrics,
   VideoForensicTelemetry,
   VideoFrameSample,
   WatermarkFinding,
@@ -21,8 +19,6 @@ import {
   type GeminiRetryEvent,
   runStructuredGeminiAnalysisWithMeta,
 } from '../geminiClient.ts';
-import { runAudioDetectionPipeline } from '../audioDetection/index.ts';
-import { computePixelForensics } from '../imageDetection/index.ts';
 import type { ProvenanceInspectionOutput } from '../provenanceVerification/index.ts';
 import { runWatermarkDetection } from '../watermarkDetection/index.ts';
 
@@ -360,8 +356,6 @@ export interface VideoPipelineOutput {
   videoFrames: VideoFrameSample[];
   videoSamplingStrategy: string;
   videoTelemetry: VideoForensicTelemetry;
-  imageVisualMetrics?: ImageVisualMetrics;
-  audioProfile?: AudioProfile;
   geminiStatus: 'completed' | 'partially_completed' | 'failed';
   geminiModelUsed: string | null;
   geminiFailureDetail: string | null;
@@ -449,7 +443,6 @@ export async function runVideoDetectionPipeline(options: {
   let sampleTimestamps: number[] = extractedFrames.map((f) => f.timestampSec);
 
   const extractSingleFrame = async (ts: number, outPath: string): Promise<boolean> => {
-    // Pass 1: Fast seek with universal 10-bit / HDR-safe MJPEG pixel conversion and portrait-safe scaling
     try {
       await execFileAsync(
         'ffmpeg',
@@ -462,42 +455,12 @@ export async function runVideoDetectionPipeline(options: {
           '-frames:v',
           '1',
           '-vf',
-          "scale='min(960,iw)':-2:flags=bicubic,format=yuv420p",
-          '-pix_fmt',
-          'yuv420p',
+          'scale=960:-2',
           '-q:v',
           '3',
           outPath,
         ],
         { timeout: 20_000 },
-      );
-      const stat = await fs.stat(outPath);
-      if (stat.size > 0) return true;
-    } catch {
-      // Fast seek failed (common on mobile camera VFR footages where timestamps start after edit-list offsets)
-    }
-
-    // Pass 2: Accurate input decoding (seeking after -i) to handle VFR, camera edit lists, and HEVC 10-bit
-    try {
-      await execFileAsync(
-        'ffmpeg',
-        [
-          '-y',
-          '-i',
-          filePath,
-          '-ss',
-          String(ts),
-          '-frames:v',
-          '1',
-          '-vf',
-          "scale='min(960,iw)':-2:flags=bicubic,format=yuv420p",
-          '-pix_fmt',
-          'yuv420p',
-          '-q:v',
-          '3',
-          outPath,
-        ],
-        { timeout: 25_000 },
       );
       const stat = await fs.stat(outPath);
       return stat.size > 0;
@@ -562,38 +525,18 @@ export async function runVideoDetectionPipeline(options: {
 
     if (rawFrames.length === 0) {
       const fallbackOut = path.join(framesOutputDir, 'frame_00.jpg');
-      try {
-        await execFileAsync(
-          'ffmpeg',
-          [
-            '-y',
-            '-i',
-            filePath,
-            '-frames:v',
-            '1',
-            '-vf',
-            "scale='min(960,iw)':-2:flags=bicubic,format=yuv420p",
-            '-pix_fmt',
-            'yuv420p',
-            '-q:v',
-            '3',
-            fallbackOut,
-          ],
-          { timeout: 25_000 },
-        );
-        const stat = await fs.stat(fallbackOut);
-        if (stat.size > 0) {
-          extractedFrames.push({
-            frameIndex: 0,
-            timestampSec: 0,
-            timestampLabel: '00:00.0',
-            filePath: fallbackOut,
-            thumbnailFile: 'frame_00.jpg',
-          });
-        }
-      } catch {
-        // FFmpeg unavailable in environment or camera stream undecodable by system binary; frame extraction deferred
-      }
+      await execFileAsync(
+        'ffmpeg',
+        ['-y', '-i', filePath, '-frames:v', '1', '-vf', 'scale=960:-2', '-q:v', '3', fallbackOut],
+        { timeout: 20_000 },
+      );
+      extractedFrames.push({
+        frameIndex: 0,
+        timestampSec: 0,
+        timestampLabel: '00:00.0',
+        filePath: fallbackOut,
+        thumbnailFile: 'frame_00.jpg',
+      });
     } else {
       for (let i = 0; i < rawFrames.length; i++) {
         const fileName = `frame_${String(i).padStart(2, '0')}.jpg`;
@@ -743,29 +686,25 @@ export async function runVideoDetectionPipeline(options: {
   let aiVideoModelUsed: string | null = null;
   let aiVideoError: string | null = null;
 
-  if (extractedFrames.length > 0) {
-    try {
-      const aiRes = await runStructuredGeminiAnalysisWithMeta<GeminiVideoForensicsResponse>({
-        parts,
-        responseSchema: VIDEO_FORENSICS_SCHEMA,
-        thinkingLevel: ThinkingLevel.LOW,
-        timeoutMs: 32_000,
-        onRetry: (evt: GeminiRetryEvent) => {
-          onStageProgress?.(
-            'ai_assessment',
-            `Gemini retrying (${evt.attempt}/${evt.totalAttempts} → ${evt.nextModel} in ${(evt.delayMs / 1000).toFixed(1)}s): ${evt.reason}`,
-            'retrying',
-          );
-        },
-      });
-      aiVideo = aiRes.data;
-      aiVideoModelUsed = aiRes.modelUsed;
-    } catch (err) {
-      aiVideoError =
-        err instanceof Error ? err.message : 'Gemini multimodal video inspection failed unexpectedly.';
-    }
-  } else {
-    aiVideoError = 'Frame visual extraction deferred: FFmpeg decoder was unavailable in this runtime.';
+  try {
+    const aiRes = await runStructuredGeminiAnalysisWithMeta<GeminiVideoForensicsResponse>({
+      parts,
+      responseSchema: VIDEO_FORENSICS_SCHEMA,
+      thinkingLevel: ThinkingLevel.LOW,
+      timeoutMs: 32_000,
+      onRetry: (evt: GeminiRetryEvent) => {
+        onStageProgress?.(
+          'ai_assessment',
+          `Gemini retrying (${evt.attempt}/${evt.totalAttempts} → ${evt.nextModel} in ${(evt.delayMs / 1000).toFixed(1)}s): ${evt.reason}`,
+          'retrying',
+        );
+      },
+    });
+    aiVideo = aiRes.data;
+    aiVideoModelUsed = aiRes.modelUsed;
+  } catch (err) {
+    aiVideoError =
+      err instanceof Error ? err.message : 'Gemini multimodal video inspection failed unexpectedly.';
   }
   const aiDurationMs = Date.now() - tAiStart;
 
@@ -835,35 +774,24 @@ export async function runVideoDetectionPipeline(options: {
       id: 'video_frame_extraction',
       methodName: 'Representative & Adaptive Multi-Frame Extraction',
       category: 'temporal',
-      status: extractedFrames.length > 0 ? 'completed' : 'unavailable',
-      ran: extractedFrames.length > 0,
-      resultSummary:
-        extractedFrames.length > 0
-          ? samplingStrategy
-          : 'Frame extraction deferred — FFmpeg decoder unavailable in current runtime; container streams, camera device tags, and metadata evaluated deterministically.',
+      status: 'completed',
+      ran: true,
+      resultSummary: samplingStrategy,
       rawSignalScore: null,
       signalPolarity: 'neutral',
       reliability: 'High',
       reliabilityWeight: 0.9,
       calibrationStatus: 'Deterministic Check',
       applicability: 'Full-duration uniform + adaptive transition sampling',
-      evidenceStrength: extractedFrames.length > 0 ? 'Moderate' : 'Low',
-      evidence:
-        extractedFrames.length > 0
-          ? [
-              samplingStrategy,
-              reusedCachedFrames
-                ? `Reused ${extractedFrames.length} cached keyframes on disk without repeating FFmpeg extraction.`
-                : `Successfully decoded ${extractedFrames.length} keyframes${adaptiveSamplingApplied ? ' including adaptive midpoint transition frames' : ''} for multi-layer inspection.`,
-            ]
-          : [
-              'FFmpeg frame decoder was unable to extract visual keyframes in this runtime.',
-              'Container streams, camera hardware tags, and audio tracks were evaluated deterministically.',
-            ],
+      evidenceStrength: 'Moderate',
+      evidence: [
+        samplingStrategy,
+        reusedCachedFrames
+          ? `Reused ${extractedFrames.length} cached keyframes on disk without repeating FFmpeg extraction.`
+          : `Successfully decoded ${extractedFrames.length} keyframes${adaptiveSamplingApplied ? ' including adaptive midpoint transition frames' : ''} for multi-layer inspection.`,
+      ],
       limitations: [
-        extractedFrames.length > 0
-          ? 'Short transient artifacts occurring strictly between sampled timestamps may not be captured.'
-          : 'Visual frame-by-frame analysis deferred until FFmpeg decoder is available.',
+        'Short transient artifacts occurring strictly between sampled timestamps may not be captured.',
       ],
       toolUsed: 'FFmpeg Adaptive Frame Sampler',
       correlationGroup: 'frame_sampling',
@@ -1541,194 +1469,6 @@ export async function runVideoDetectionPipeline(options: {
     provenance.synthIdDetector,
   ];
 
-  // -------------------------------------------------------------
-  // Connect Video to TruthLens Forensic Pipelines:
-  // 1. Send extracted keyframes to Image Pixel Forensics (Noise residual, ELA, Entropy)
-  // 2. Extract original audio track and send to Audio Forensic Pipeline
-  // -------------------------------------------------------------
-  let imageVisualMetrics: ImageVisualMetrics | undefined;
-  const frameImageDetectors: DetectorResult[] = [];
-
-  if (extractedFrames.length > 0) {
-    try {
-      const keyframePath = extractedFrames[0].filePath;
-      const pixelMetrics = await computePixelForensics(keyframePath);
-      imageVisualMetrics = {
-        ...pixelMetrics,
-        ocrExtractedText: wmResult.ocrDetector.evidence,
-        suspiciousRegions: [],
-      };
-
-      frameImageDetectors.push(
-        {
-          id: 'frame_pixel_noise_residual',
-          methodName: 'Keyframe Pixel Noise & Laplacian Residual',
-          category: 'signal',
-          status: 'completed',
-          ran: true,
-          resultSummary: `Keyframe Laplacian noise variance: ${pixelMetrics.laplacianVariance} (Quadrant spread: ${(pixelMetrics.quadrantNoiseSpread * 100).toFixed(1)}%).`,
-          rawSignalScore: pixelMetrics.laplacianVariance < 15 ? 65 : pixelMetrics.laplacianVariance > 80 ? 25 : 45,
-          signalPolarity:
-            pixelMetrics.laplacianVariance < 15
-              ? 'ai_indicator'
-              : pixelMetrics.laplacianVariance > 80
-                ? 'natural_capture'
-                : 'neutral',
-          reliability: 'Moderate',
-          reliabilityWeight: 0.5,
-          calibrationStatus: 'Deterministic Check',
-          applicability: `Extracted keyframe #0 (${extractedFrames[0].timestampLabel})`,
-          evidenceStrength: 'Low',
-          evidence: [
-            `Laplacian noise variance: ${pixelMetrics.laplacianVariance}`,
-            `Quadrant noise spread across quadrants: ${(pixelMetrics.quadrantNoiseSpread * 100).toFixed(1)}%`,
-            `High-frequency energy ratio: ${pixelMetrics.highFreqEnergyRatio}`,
-            `Edge density: ${(pixelMetrics.edgeDensity * 100).toFixed(1)}%`,
-          ],
-          limitations: [
-            'Video compression (H.264/HEVC/VP9 quantization) naturally attenuates high-frequency noise across both authentic camera footage and AI clips.',
-          ],
-          toolUsed: 'TruthLens Pixel Forensic Engine (sharp)',
-          correlationGroup: 'frame_pixel_noise',
-          providerGroup: 'deterministic_signal',
-          durationMs: localDurationMs,
-          detectorVersion: '3.0',
-        },
-        {
-          id: 'frame_ela_analysis',
-          methodName: 'Keyframe Error Level Analysis (ELA)',
-          category: 'signal',
-          status: 'completed',
-          ran: true,
-          resultSummary: `Keyframe ELA mean difference: ${pixelMetrics.elaMeanDiff} (Double compression delta: ${pixelMetrics.doubleCompressionDelta}).`,
-          rawSignalScore: null,
-          signalPolarity: 'neutral',
-          reliability: 'Low',
-          reliabilityWeight: 0.4,
-          calibrationStatus: 'Deterministic Check',
-          applicability: `Extracted keyframe #0 (${extractedFrames[0].timestampLabel})`,
-          evidenceStrength: 'Low',
-          evidence: [
-            `ELA Q90 compression difference: ${pixelMetrics.elaMeanDiff} (max ${pixelMetrics.elaMaxDiff})`,
-            `Double compression quantization delta: ${pixelMetrics.doubleCompressionDelta}`,
-          ],
-          limitations: [
-            'Keyframes extracted from decoded video frames reflect intra-block DCT transform quantization rather than standalone camera JPEG quantization tables.',
-          ],
-          toolUsed: 'TruthLens ELA Engine (sharp)',
-          correlationGroup: 'frame_pixel_noise',
-          providerGroup: 'deterministic_signal',
-          durationMs: localDurationMs,
-          detectorVersion: '3.0',
-        },
-      );
-    } catch {
-      // Keyframe image pixel analysis is non-blocking
-    }
-  }
-
-  // Audio track extraction & forensic analysis
-  let audioProfile: AudioProfile | undefined;
-  const audioDetectors: DetectorResult[] = [];
-  const baseUploadDir = path.dirname(framesOutputDir);
-  const extractedAudioPath = path.join(baseUploadDir, 'extracted_audio.wav');
-  let audioExtractedSuccessfully = false;
-
-  const hasAudioTrack = Boolean(metadata.audioCodec && metadata.audioCodec !== 'None detected');
-
-  if (hasAudioTrack) {
-    try {
-      onStageProgress?.('media_preprocessing', 'Extracting 16 kHz uncompressed PCM audio track via FFmpeg.');
-      await execFileAsync(
-        'ffmpeg',
-        [
-          '-y',
-          '-i',
-          filePath,
-          '-vn',
-          '-acodec',
-          'pcm_s16le',
-          '-ar',
-          '16000',
-          '-ac',
-          '1',
-          extractedAudioPath,
-        ],
-        { timeout: 25_000 },
-      );
-      const stat = await fs.stat(extractedAudioPath);
-      if (stat.size > 512) {
-        audioExtractedSuccessfully = true;
-      }
-    } catch {
-      // Audio extraction failed (e.g. ffmpeg not found or stream error); handled gracefully below
-    }
-
-    if (audioExtractedSuccessfully) {
-      try {
-        const audioRes = await runAudioDetectionPipeline({
-          filePath: extractedAudioPath,
-          metadata: {
-            ...metadata,
-            mediaType: 'audio',
-            detectedMime: 'audio/wav',
-            audioFormat: 'WAV (Extracted Track)',
-            codec: 'pcm_s16le',
-            sampleRate: 16000,
-            audioChannels: 1,
-          },
-          provenance,
-          onStageProgress: (stageId, detail, statusOverride) => {
-            onStageProgress?.(stageId, `[Audio Track] ${detail}`, statusOverride);
-          },
-        });
-        audioProfile = audioRes.audioProfile;
-        // Prefix audio detectors for clarity in the unified report
-        for (const ad of audioRes.detectors) {
-          audioDetectors.push({
-            ...ad,
-            methodName: `[Audio Track] ${ad.methodName}`,
-          });
-        }
-      } catch {
-        // Audio pipeline failure is fault-isolated
-      }
-    }
-  }
-
-  if (!hasAudioTrack || !audioExtractedSuccessfully) {
-    audioDetectors.push({
-      id: 'audio_track_inspection',
-      methodName: 'Extracted Audio Track & Acoustic Inspection',
-      category: 'signal',
-      status: 'completed',
-      ran: true,
-      resultSummary: hasAudioTrack
-        ? 'Audio stream present in container but could not be extracted (FFmpeg audio decoder unavailable; strictly neutral).'
-        : 'Video container is silent — no audio track detected (strictly neutral context; common in B-roll and screen captures).',
-      rawSignalScore: null,
-      signalPolarity: 'neutral',
-      reliability: 'High',
-      reliabilityWeight: 0.5,
-      calibrationStatus: 'Deterministic Check',
-      applicability: 'Video container audio track inspection',
-      evidenceStrength: 'Low',
-      evidence: [
-        hasAudioTrack
-          ? `Container declared audio codec: ${metadata.audioCodec}. Audio stream extraction deferred.`
-          : 'No decodable audio stream found in container.',
-      ],
-      limitations: ['Audio authenticity cannot be evaluated on silent video footage.'],
-      toolUsed: 'FFprobe Stream Analyzer',
-      correlationGroup: 'av_stream_context',
-      providerGroup: 'deterministic_metadata',
-      durationMs: localDurationMs,
-      detectorVersion: '3.0',
-    });
-  }
-
-  const allDetectors = [...detectors, ...frameImageDetectors, ...audioDetectors];
-
   const geminiStatus: 'completed' | 'partially_completed' | 'failed' =
     aiVideo && wmResult.geminiSucceeded
       ? 'completed'
@@ -1739,7 +1479,7 @@ export async function runVideoDetectionPipeline(options: {
   const geminiErrors = [wmResult.geminiError, aiVideoError].filter(Boolean);
 
   return {
-    detectors: allDetectors,
+    detectors,
     watermarks: [...wmResult.watermarks, ...provenance.provenanceWatermarks],
     videoFrames,
     videoSamplingStrategy: samplingStrategy,
@@ -1757,8 +1497,6 @@ export async function runVideoDetectionPipeline(options: {
       adaptiveSamplingApplied,
       interpolationNote: deltaStats.interpolationNote,
     },
-    imageVisualMetrics,
-    audioProfile,
     geminiStatus,
     geminiModelUsed: aiVideoModelUsed ?? wmResult.geminiModelUsed,
     geminiFailureDetail: geminiErrors.length > 0 ? Array.from(new Set(geminiErrors)).join(' | ') : null,

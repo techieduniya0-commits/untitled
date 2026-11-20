@@ -17,9 +17,7 @@ export const ALLOWED_EXTENSIONS = new Set([
   '.webp',
   '.mp4',
   '.mov',
-  '.mkv',
   '.webm',
-  '.avi',
   '.pdf',
   '.docx',
   '.txt',
@@ -61,25 +59,7 @@ function classifyByMime(mime: string, ext: string): MediaType | null {
   if (['image/jpeg', 'image/png', 'image/webp'].includes(mime)) {
     return 'image';
   }
-  if (
-    [
-      'video/mp4',
-      'video/quicktime',
-      'video/webm',
-      'video/x-matroska',
-      'video/mkv',
-      'video/x-msvideo',
-      'video/avi',
-      'video/vnd.avi',
-      'video/x-m4v',
-      'video/3gpp',
-      'video/3gpp2',
-      'video/3gp',
-      'video/mp4v-es',
-      'video/hevc',
-      'video/h264',
-    ].includes(mime)
-  ) {
+  if (['video/mp4', 'video/quicktime', 'video/webm'].includes(mime)) {
     return 'video';
   }
   if (
@@ -110,108 +90,6 @@ function classifyByMime(mime: string, ext: string): MediaType | null {
     return 'document';
   }
   return null;
-}
-
-/**
- * Robust ISO-BMFF (MP4 / MOV), Matroska (MKV), WebM, and AVI container inspector.
- * Validates actual binary structure directly from the buffer, not just file extensions.
- */
-export function detectVideoContainerSignature(buffer: Buffer): {
-  detected: boolean;
-  mime: string;
-  container: 'mp4' | 'mov' | 'mkv' | 'webm' | 'avi' | 'unknown';
-  details: string;
-} {
-  if (buffer.length < 8) {
-    return { detected: false, mime: '', container: 'unknown', details: 'Buffer too short for container inspection' };
-  }
-
-  // 1. Matroska (.mkv) / WebM (.webm) EBML header: 0x1A 0x45 0xDF 0xA3
-  if (buffer[0] === 0x1a && buffer[1] === 0x45 && buffer[2] === 0xdf && buffer[3] === 0xa3) {
-    const headAscii = buffer.subarray(0, Math.min(buffer.length, 4096)).toString('latin1');
-    if (headAscii.includes('webm')) {
-      return { detected: true, mime: 'video/webm', container: 'webm', details: 'EBML WebM container header verified' };
-    }
-    return { detected: true, mime: 'video/x-matroska', container: 'mkv', details: 'EBML Matroska container header verified' };
-  }
-
-  // 2. AVI: RIFF....AVI  or RIFF....AVIX
-  if (
-    buffer.length >= 12 &&
-    buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 // 'RIFF'
-  ) {
-    const riffType = buffer.toString('ascii', 8, 12);
-    if (riffType === 'AVI ' || riffType === 'AVIX') {
-      return { detected: true, mime: 'video/x-msvideo', container: 'avi', details: `RIFF ${riffType.trim()} container verified` };
-    }
-  }
-
-  // 3. ISO Base Media File Format (MP4 / MOV / M4V)
-  // Scans top-level boxes in the header (e.g. ftyp, moov, mdat, free, skip, wide)
-  let offset = 0;
-  const maxScan = Math.min(buffer.length, 65536);
-  let sawFtyp = false;
-  let sawMoovOrMdat = false;
-  let detectedBrand = '';
-
-  while (offset + 8 <= maxScan) {
-    const boxSize = buffer.readUInt32BE(offset);
-    const boxType = buffer.toString('ascii', offset + 4, offset + 8);
-
-    if (boxType === 'ftyp' && offset + 12 <= maxScan) {
-      sawFtyp = true;
-      detectedBrand = buffer.toString('ascii', offset + 8, Math.min(offset + 12, maxScan));
-      break;
-    }
-
-    if (boxType === 'moov' || boxType === 'mdat') {
-      sawMoovOrMdat = true;
-    }
-
-    // Known valid top-level atoms that can precede ftyp (including camera metadata, C2PA, and manufacturer atoms)
-    const validAtoms = ['free', 'skip', 'wide', 'pnot', 'moov', 'mdat', 'uuid', 'meta', 'junk', 'prfl', 'jumb', 'sefd', 'ftyp'];
-    if (!validAtoms.includes(boxType) && !sawFtyp) {
-      break;
-    }
-
-    if (boxSize === 0) break; // Runs to EOF
-    const advance = boxSize === 1 ? 16 : boxSize;
-    if (advance <= 0 || advance > 100_000_000) break; // Corrupted box size
-    offset += advance;
-  }
-
-  // Also do a fallback substring search for 'ftyp' if standard box scan didn't find it directly
-  if (!sawFtyp) {
-    const ftypIdx = buffer.indexOf('ftyp');
-    if (ftypIdx >= 4 && ftypIdx <= 2048) {
-      sawFtyp = true;
-      detectedBrand = buffer.toString('ascii', ftypIdx + 4, Math.min(ftypIdx + 8, buffer.length));
-    }
-  }
-
-  if (sawFtyp) {
-    const cleanBrand = detectedBrand.trim().toLowerCase();
-    if (cleanBrand === 'qt') {
-      return { detected: true, mime: 'video/quicktime', container: 'mov', details: `QuickTime (qt) container brand verified` };
-    }
-    return {
-      detected: true,
-      mime: 'video/mp4',
-      container: 'mp4',
-      details: `ISO BMFF MP4 container verified (brand: ${cleanBrand || 'isom'})`,
-    };
-  }
-
-  if (sawMoovOrMdat) {
-    return {
-      detected: true,
-      mime: 'video/mp4',
-      container: 'mp4',
-      details: 'ISO BMFF container verified (contains valid moov/mdat atom)',
-    };
-  }
-
-  return { detected: false, mime: '', container: 'unknown', details: 'No standard video container signature detected' };
 }
 
 function looksLikePlainText(buffer: Buffer): boolean {
@@ -280,7 +158,7 @@ export async function validateUploadedFile(
   const ext = path.extname(originalName).toLowerCase();
   if (!ALLOWED_EXTENSIONS.has(ext)) {
     throw new FileValidationError(
-      `Unsupported file format "${ext || 'unknown'}". Supported formats: JPG, JPEG, PNG, WEBP, MP4, MOV, MKV, WEBM, AVI, PDF, DOCX, TXT, WAV, MP3, M4A.`,
+      `Unsupported file format "${ext || 'unknown'}". Supported formats: JPG, JPEG, PNG, WEBP, MP4, MOV, WEBM, PDF, DOCX, TXT, WAV, MP3, M4A.`,
       'UNSUPPORTED_FORMAT',
       415,
     );
@@ -374,16 +252,6 @@ export async function validateUploadedFile(
     }
   }
 
-  // Deep inspection for video containers (MP4, MOV, MKV, WEBM, AVI) if file-type was inconclusive
-  // or to ensure ISO BMFF / EBML / RIFF structure is strictly verified
-  if (!detectedMime || ['.mp4', '.mov', '.mkv', '.webm', '.avi'].includes(ext)) {
-    const videoSig = detectVideoContainerSignature(headBuffer);
-    if (videoSig.detected) {
-      detectedMime = videoSig.mime;
-      warnings.push(videoSig.details);
-    }
-  }
-
   if (!detectedMime) {
     throw new FileValidationError(
       `Unsupported or corrupted format for "${originalName}" — binary magic signature could not be verified (extension is not trusted).`,
@@ -454,25 +322,11 @@ export async function validateUploadedFile(
       }
     } catch (err) {
       if (err instanceof FileValidationError) throw err;
-      const isMissingBinary =
-        Boolean(err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'ENOENT');
-      if (isMissingBinary) {
-        warnings.push('FFprobe binary not present in environment; verified via binary container parser.');
-      } else {
-        // Defensive: Check if container signature is verified before rejecting genuine camera videos with demuxer warnings/timeouts
-        const videoSig = detectVideoContainerSignature(headBuffer);
-        if (videoSig.detected) {
-          warnings.push(
-            `FFprobe stream inspection produced a non-fatal warning (${err instanceof Error ? err.message : 'demuxer notice'}); verified container signature (${videoSig.container.toUpperCase()}).`,
-          );
-        } else {
-          throw new FileValidationError(
-            `Video file "${originalName}" failed integrity verification: ${err instanceof Error ? err.message : 'corrupted stream'}.`,
-            'CORRUPTED_FILE',
-            400,
-          );
-        }
-      }
+      throw new FileValidationError(
+        `Video file "${originalName}" failed FFprobe integrity verification and appears corrupted.`,
+        'CORRUPTED_FILE',
+        400,
+      );
     }
   } else if (mediaType === 'audio') {
     try {
@@ -492,17 +346,11 @@ export async function validateUploadedFile(
       }
     } catch (err) {
       if (err instanceof FileValidationError) throw err;
-      const isMissingBinary =
-        Boolean(err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'ENOENT');
-      if (isMissingBinary) {
-        warnings.push('FFprobe binary not present in environment; audio verified via binary header check.');
-      } else {
-        throw new FileValidationError(
-          `Audio file "${originalName}" failed FFprobe integrity check and appears corrupted.`,
-          'CORRUPTED_FILE',
-          400,
-        );
-      }
+      throw new FileValidationError(
+        `Audio file "${originalName}" failed FFprobe integrity check and appears corrupted.`,
+        'CORRUPTED_FILE',
+        400,
+      );
     }
   }
 
@@ -513,9 +361,7 @@ export async function validateUploadedFile(
     '.webp': 'image',
     '.mp4': 'video',
     '.mov': 'video',
-    '.mkv': 'video',
     '.webm': 'video',
-    '.avi': 'video',
     '.wav': 'audio',
     '.mp3': 'audio',
     '.m4a': 'audio',

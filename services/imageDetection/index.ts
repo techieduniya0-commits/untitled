@@ -99,7 +99,7 @@ function computeShannonEntropy(histogram: Uint32Array, totalPixels: number): num
   return Number(entropy.toFixed(3));
 }
 
-export async function computePixelForensics(filePath: string): Promise<{
+async function computePixelForensics(filePath: string): Promise<{
   laplacianVariance: number;
   quadrantNoiseSpread: number;
   noiseResidualIndex: number;

@@ -32,7 +32,7 @@ interface DashboardViewProps {
   loading: boolean;
   onStartUpload: () => void;
   onOpenAnalysis: (analysis: AnalysisRecord) => void;
-  onRunSample: (sampleType: 'image' | 'document' | 'audio') => void;
+  onRunSample: (sampleType: 'image' | 'document') => void;
   runningSample: boolean;
 }
 
@@ -150,14 +150,6 @@ export function DashboardView({
             onClick={() => onRunSample('image')}
           >
             {runningSample ? 'Starting sample...' : 'Try sample image'}
-          </PremiumButton>
-          <PremiumButton
-            variant="secondary"
-            size="md"
-            disabled={runningSample}
-            onClick={() => onRunSample('audio')}
-          >
-            {runningSample ? 'Starting sample...' : 'Try sample audio'}
           </PremiumButton>
           <PremiumButton
             variant="primary"
@@ -344,14 +336,6 @@ export function DashboardView({
                 onClick={() => onRunSample('image')}
               >
                 Analyse sample architectural photo
-              </PremiumButton>
-              <PremiumButton
-                variant="secondary"
-                size="md"
-                disabled={runningSample}
-                onClick={() => onRunSample('audio')}
-              >
-                Analyse sample synthetic voice
               </PremiumButton>
               <PremiumButton
                 variant="secondary"

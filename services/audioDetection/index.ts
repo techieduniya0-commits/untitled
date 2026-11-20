@@ -6,26 +6,17 @@ import type {
   AudioProfile,
   AudioSegmentFinding,
   DetectorResult,
-  EvidencePolarity,
   ExtractedMetadata,
   WatermarkFinding,
 } from '../../src/types/forensics.ts';
 import {
   GEMINI_FORENSIC_MODEL,
+  type GeminiRetryEvent,
   runStructuredGeminiAnalysisWithMeta,
 } from '../geminiClient.ts';
 import type { ProvenanceInspectionOutput } from '../provenanceVerification/index.ts';
 
 const execFileAsync = promisify(execFile);
-
-export interface AudioPipelineOutput {
-  detectors: DetectorResult[];
-  watermarks: WatermarkFinding[];
-  audioProfile: AudioProfile;
-  geminiStatus: 'completed' | 'failed';
-  geminiModelUsed: string | null;
-  geminiFailureDetail: string | null;
-}
 
 interface GeminiAudioForensicsResponse {
   speechDetected: boolean;
@@ -49,9 +40,13 @@ interface GeminiAudioForensicsResponse {
   detectedSyntheticEvidence: string[];
   uncertainSignals: string[];
   naturalHumanCues: string[];
+  notableTimestampObservations: Array<{
+    timestampLabel: string;
+    observation: string;
+  }>;
 }
 
-const FAST_AUDIO_FORENSICS_SCHEMA = {
+const AUDIO_FORENSICS_SCHEMA = {
   type: Type.OBJECT,
   properties: {
     speechDetected: { type: Type.BOOLEAN },
@@ -75,6 +70,17 @@ const FAST_AUDIO_FORENSICS_SCHEMA = {
     detectedSyntheticEvidence: { type: Type.ARRAY, items: { type: Type.STRING } },
     uncertainSignals: { type: Type.ARRAY, items: { type: Type.STRING } },
     naturalHumanCues: { type: Type.ARRAY, items: { type: Type.STRING } },
+    notableTimestampObservations: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          timestampLabel: { type: Type.STRING },
+          observation: { type: Type.STRING },
+        },
+        required: ['timestampLabel', 'observation'],
+      },
+    },
   },
   required: [
     'speechDetected',
@@ -95,6 +101,7 @@ const FAST_AUDIO_FORENSICS_SCHEMA = {
     'detectedSyntheticEvidence',
     'uncertainSignals',
     'naturalHumanCues',
+    'notableTimestampObservations',
   ],
 };
 
@@ -104,279 +111,33 @@ function formatAudioTime(sec: number): string {
   return `${String(m).padStart(2, '0')}:${s.toFixed(1).padStart(4, '0')}`;
 }
 
-/**
- * Creates a standard 44-byte RIFF/WAV header for 16 kHz 16-bit mono PCM.
- */
-export function createWavBuffer(pcmBytes: Buffer, sampleRate = 16000, numChannels = 1): Buffer {
-  const header = Buffer.alloc(44);
-  const byteRate = sampleRate * numChannels * 2;
-  const blockAlign = numChannels * 2;
-  const dataSize = pcmBytes.length;
-
-  header.write('RIFF', 0);
-  header.writeUInt32LE(36 + dataSize, 4);
-  header.write('WAVE', 8);
-  header.write('fmt ', 12);
-  header.writeUInt32LE(16, 16);
-  header.writeUInt16LE(1, 20); // PCM
-  header.writeUInt16LE(numChannels, 22);
-  header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(byteRate, 28);
-  header.writeUInt16LE(blockAlign, 32);
-  header.writeUInt16LE(16, 34); // 16-bit
-  header.write('data', 36);
-  header.writeUInt32LE(dataSize, 40);
-
-  return Buffer.concat([header, pcmBytes]);
-}
-
-/**
- * Safe high-speed audio decoder to 16 kHz mono signed 16-bit PCM.
- * Decodes up to maxSeconds (default 35s) for instant sub-second response.
- */
-async function decodeAudioToPcm(filePath: string, maxSeconds = 35): Promise<{
-  samples: Float32Array;
-  pcmBuffer: Buffer;
-  sampleRate: number;
-  durationSec: number;
-  sourceMethod: string;
-}> {
+async function computeAcousticProfile(filePath: string): Promise<AudioProfile> {
   const sampleRate = 16000;
+  // Decode up to first 90 seconds into raw 16kHz mono signed 16-bit PCM for real acoustic signal analysis
+  const { stdout } = await execFileAsync(
+    'ffmpeg',
+    [
+      '-i',
+      filePath,
+      '-t',
+      '90',
+      '-ac',
+      '1',
+      '-ar',
+      String(sampleRate),
+      '-f',
+      's16le',
+      '-v',
+      'error',
+      'pipe:1',
+    ],
+    { encoding: 'buffer', maxBuffer: 16 * 1024 * 1024, timeout: 25_000 },
+  );
 
-  // 1. Try FFmpeg first
-  try {
-    const { stdout } = await execFileAsync(
-      'ffmpeg',
-      [
-        '-i',
-        filePath,
-        '-t',
-        String(maxSeconds),
-        '-ac',
-        '1',
-        '-ar',
-        String(sampleRate),
-        '-f',
-        's16le',
-        '-v',
-        'error',
-        'pipe:1',
-      ],
-      { encoding: 'buffer', maxBuffer: 12 * 1024 * 1024, timeout: 8_000 },
-    );
-    const sampleCount = Math.floor(stdout.length / 2);
-    const samples = new Float32Array(sampleCount);
-    for (let i = 0; i < sampleCount; i++) {
-      samples[i] = stdout.readInt16LE(i * 2) / 32768;
-    }
+  const sampleCount = Math.floor(stdout.length / 2);
+  if (sampleCount < 256) {
     return {
-      samples,
-      pcmBuffer: stdout,
-      sampleRate,
-      durationSec: sampleCount / sampleRate,
-      sourceMethod: 'FFmpeg 16kHz PCM decoder',
-    };
-  } catch {
-    // 2. Pure-TS WAV header reader fallback if FFmpeg is absent or failed
-    try {
-      const fileBuf = await fs.readFile(filePath);
-      if (
-        fileBuf.length > 44 &&
-        fileBuf.subarray(0, 4).toString('ascii') === 'RIFF' &&
-        fileBuf.subarray(8, 12).toString('ascii') === 'WAVE'
-      ) {
-        let offset = 12;
-        let dataOffset = -1;
-        let dataLength = 0;
-        let wavChannels = 1;
-        let wavSampleRate = 16000;
-        let bitsPerSample = 16;
-
-        while (offset + 8 <= fileBuf.length) {
-          const chunkId = fileBuf.toString('ascii', offset, offset + 4);
-          const chunkSize = fileBuf.readUInt32LE(offset + 4);
-          if (chunkId === 'fmt ' && offset + 24 <= fileBuf.length) {
-            wavChannels = fileBuf.readUInt16LE(offset + 10);
-            wavSampleRate = fileBuf.readUInt32LE(offset + 12);
-            bitsPerSample = fileBuf.readUInt16LE(offset + 22);
-          } else if (chunkId === 'data') {
-            dataOffset = offset + 8;
-            dataLength = Math.min(chunkSize, fileBuf.length - dataOffset);
-            break;
-          }
-          offset += 8 + chunkSize;
-        }
-
-        if (dataOffset !== -1 && bitsPerSample === 16) {
-          const rawSamplesCount = Math.floor(dataLength / (2 * wavChannels));
-          const maxSamples = Math.min(rawSamplesCount, maxSeconds * wavSampleRate);
-          const samples = new Float32Array(maxSamples);
-          const pcmBuffer = Buffer.alloc(maxSamples * 2);
-
-          for (let i = 0; i < maxSamples; i++) {
-            const raw = fileBuf.readInt16LE(dataOffset + i * 2 * wavChannels);
-            samples[i] = raw / 32768;
-            pcmBuffer.writeInt16LE(raw, i * 2);
-          }
-
-          return {
-            samples,
-            pcmBuffer,
-            sampleRate: wavSampleRate,
-            durationSec: maxSamples / wavSampleRate,
-            sourceMethod: 'Pure-TS WAV direct reader',
-          };
-        }
-      }
-    } catch {
-      // ignore fallback error
-    }
-
-    return {
-      samples: new Float32Array(0),
-      pcmBuffer: Buffer.alloc(0),
-      sampleRate,
-      durationSec: 0,
-      sourceMethod: 'Decode failed',
-    };
-  }
-}
-
-/**
- * Connects to candidate pretrained audio anti-spoofing model
- * Model reference: garystafford/wav2vec2-deepfake-voice-detector (Apache 2.0)
- * Uses Hugging Face Inference API / custom inference endpoint with strict 3.5s timeout.
- */
-async function queryTrainedAudioDeepfakeClassifier(pcmBuffer: Buffer): Promise<{
-  ran: boolean;
-  score: number | null;
-  label: string;
-  modelUsed: string;
-  details: string;
-}> {
-  const sliceLen = Math.min(pcmBuffer.length, 4 * 16000 * 2);
-  if (sliceLen < 16000 * 2) {
-    return {
-      ran: false,
-      score: null,
-      label: 'insufficient_audio',
-      modelUsed: 'garystafford/wav2vec2-deepfake-voice-detector',
-      details: 'Audio recording too brief (< 1.0s) for sequence classification.',
-    };
-  }
-
-  const slicePcm = pcmBuffer.subarray(0, sliceLen);
-  const wavBuffer = createWavBuffer(slicePcm, 16000, 1);
-
-  const customUrl = process.env.AUDIO_DETECTOR_API_URL?.trim();
-  const endpoint =
-    customUrl ||
-    'https://router.huggingface.co/hf-inference/models/garystafford/wav2vec2-deepfake-voice-detector';
-
-  const hfToken = (process.env.HF_TOKEN || process.env.HUGGINGFACE_API_KEY || '').trim();
-
-  try {
-    const headers: Record<string, string> = {
-      'Content-Type': 'audio/wav',
-      'Accept': 'application/json',
-    };
-    if (hfToken) {
-      headers['Authorization'] = `Bearer ${hfToken}`;
-    }
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3500);
-
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers,
-      body: wavBuffer,
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (res.ok) {
-      const data = (await res.json()) as Array<{ label?: string; score?: number }>;
-      if (Array.isArray(data) && data.length > 0) {
-        const fakeItem = data.find(
-          (d) =>
-            String(d.label).toLowerCase().includes('fake') ||
-            String(d.label).toLowerCase().includes('synthetic') ||
-            String(d.label).toLowerCase().includes('spoof') ||
-            d.label === 'LABEL_1',
-        );
-        const realItem = data.find(
-          (d) =>
-            String(d.label).toLowerCase().includes('real') ||
-            String(d.label).toLowerCase().includes('human') ||
-            d.label === 'LABEL_0',
-        );
-
-        let fakeProbability = 0.5;
-        if (fakeItem && typeof fakeItem.score === 'number') {
-          fakeProbability = fakeItem.score;
-        } else if (realItem && typeof realItem.score === 'number') {
-          fakeProbability = 1 - realItem.score;
-        }
-
-        const score = Math.round(fakeProbability * 100);
-        const label = score >= 68 ? 'fake' : score <= 35 ? 'real' : 'inconclusive';
-        return {
-          ran: true,
-          score,
-          label,
-          modelUsed: 'garystafford/wav2vec2-deepfake-voice-detector (Wav2Vec2 Voice Anti-Spoofing)',
-          details: `Pretrained Wav2Vec2 audio deepfake detector returned ${(fakeProbability * 100).toFixed(1)}% synthetic speech probability.`,
-        };
-      }
-    }
-  } catch {
-    // Timeout, offline, or sandbox restriction - handled gracefully
-  }
-
-  return {
-    ran: false,
-    score: null,
-    label: 'offline',
-    modelUsed: 'garystafford/wav2vec2-deepfake-voice-detector',
-    details: 'Remote inference endpoint unreachable or timed out; executed fast local acoustic anti-spoofing classifier.',
-  };
-}
-
-/**
- * High-speed local acoustic anti-spoofing feature extraction (< 20ms).
- * Evaluates neural vocoder spectral roll-off, pitch micro-jitter, digital silence gating,
- * and high-frequency sibilance across overlapping 3-second segments.
- */
-function computeLocalAcousticAntiSpoofing(
-  samples: Float32Array,
-  sampleRate: number,
-): {
-  aggregatedScore: number;
-  assessmentCategory:
-    | 'Likely synthetic or spoofed speech'
-    | 'Likely genuine human speech'
-    | 'Inconclusive / insufficient evidence'
-    | 'Analysis unavailable because of a technical failure';
-  segmentFindings: AudioSegmentFinding[];
-  spectralCentroidHz: number | null;
-  highFreqEnergyRatio: number | null;
-  silenceRatio: number;
-  dynamicRangeDb: number;
-  clippingRate: number;
-  noiseFloorDb: number | null;
-  spectralFlatness: number | null;
-  waveformPeaks: number[];
-  detectedIndicators: string[];
-  uncertainSignals: string[];
-  naturalCues: string[];
-} {
-  const sampleCount = samples.length;
-  if (sampleCount < sampleRate * 0.8) {
-    return {
-      aggregatedScore: 50,
-      assessmentCategory: 'Inconclusive / insufficient evidence',
-      segmentFindings: [],
+      waveformPeaks: [0.1, 0.2, 0.15, 0.1],
       spectralCentroidHz: null,
       highFreqEnergyRatio: null,
       silenceRatio: 1,
@@ -384,20 +145,29 @@ function computeLocalAcousticAntiSpoofing(
       clippingRate: 0,
       noiseFloorDb: null,
       spectralFlatness: null,
-      waveformPeaks: [0.1, 0.2, 0.15],
       detectedIndicators: [],
-      uncertainSignals: ['Audio stream too short for acoustic profiling (< 0.8s).'],
+      uncertainSignals: ['Audio clip too short (< 256 PCM samples) for reliable acoustic profiling.'],
       naturalCues: [],
+      segments: [],
     };
   }
 
-  // 1. Waveform Peaks (64 bins)
-  const numBins = 64;
-  const binSize = Math.max(1, Math.floor(sampleCount / numBins));
-  const waveformPeaks: number[] = [];
+  const samples = new Float32Array(sampleCount);
   let silentCount = 0;
   let clippedCount = 0;
 
+  for (let i = 0; i < sampleCount; i++) {
+    const val = stdout.readInt16LE(i * 2) / 32768;
+    samples[i] = val;
+    const abs = Math.abs(val);
+    if (abs < 0.008) silentCount++;
+    if (abs >= 0.992) clippedCount++;
+  }
+
+  // Build 64-bin waveform peaks for visualization
+  const numBins = 64;
+  const binSize = Math.max(1, Math.floor(sampleCount / numBins));
+  const waveformPeaks: number[] = [];
   for (let b = 0; b < numBins; b++) {
     let peak = 0;
     const start = b * binSize;
@@ -405,13 +175,78 @@ function computeLocalAcousticAntiSpoofing(
     for (let i = start; i < end; i++) {
       const a = Math.abs(samples[i]);
       if (a > peak) peak = a;
-      if (a < 0.008) silentCount++;
-      if (a >= 0.992) clippedCount++;
     }
     waveformPeaks.push(Number(peak.toFixed(3)));
   }
 
-  // 2. Multi-window DFT for spectral centroid & flatness
+  // Compute short-frame noise floor estimate (100ms windows, 15th percentile RMS)
+  const frameLen = Math.floor(sampleRate * 0.1);
+  const frameRmsDbs: number[] = [];
+  for (let fStart = 0; fStart + frameLen <= sampleCount; fStart += frameLen) {
+    let sq = 0;
+    for (let i = fStart; i < fStart + frameLen; i++) {
+      sq += samples[i] * samples[i];
+    }
+    const rms = Math.sqrt(sq / frameLen);
+    frameRmsDbs.push(20 * Math.log10(Math.max(rms, 1e-6)));
+  }
+  frameRmsDbs.sort((a, b) => a - b);
+  const noiseFloorDb =
+    frameRmsDbs.length >= 4
+      ? Number(frameRmsDbs[Math.floor(frameRmsDbs.length * 0.15)].toFixed(1))
+      : null;
+
+  // Segment-level RMS (dB) and Zero-Crossing Rate (ZCR) across 3–8 time windows
+  const totalSec = sampleCount / sampleRate;
+  const numSegs = Math.min(8, Math.max(3, Math.ceil(totalSec / 3)));
+  const segLen = Math.floor(sampleCount / numSegs);
+  const rmsValues: number[] = [];
+  const segments: AudioSegmentFinding[] = [];
+
+  for (let s = 0; s < numSegs; s++) {
+    const startIdx = s * segLen;
+    const endIdx = s === numSegs - 1 ? sampleCount : (s + 1) * segLen;
+    let sqSum = 0;
+    let zcr = 0;
+    for (let i = startIdx; i < endIdx; i++) {
+      sqSum += samples[i] * samples[i];
+      if (
+        i > startIdx &&
+        ((samples[i] >= 0 && samples[i - 1] < 0) || (samples[i] < 0 && samples[i - 1] >= 0))
+      ) {
+        zcr++;
+      }
+    }
+    const count = Math.max(1, endIdx - startIdx);
+    const rms = Math.sqrt(sqSum / count);
+    const rmsDb = Number((20 * Math.log10(Math.max(rms, 1e-6))).toFixed(1));
+    const zcrRate = Number((zcr / count).toFixed(4));
+    rmsValues.push(rmsDb);
+
+    const startSec = Number((startIdx / sampleRate).toFixed(1));
+    const endSec = Number((endIdx / sampleRate).toFixed(1));
+    let observation = 'Nominal acoustic energy and zero-crossing profile.';
+    let flagged = false;
+    if (rmsDb < -52) {
+      observation = 'Near-digital-zero silence floor (minimal ambient room tone — uncertain signal; occurs in TTS and heavy noise gates).';
+      flagged = true;
+    } else if (zcrRate > 0.28) {
+      observation = 'Elevated high-frequency zero-crossing density (possible metallic vocoder sibilance or codec noise).';
+      flagged = true;
+    }
+
+    segments.push({
+      startSec,
+      endSec,
+      timestampLabel: `${formatAudioTime(startSec)} – ${formatAudioTime(endSec)}`,
+      rmsDb,
+      zeroCrossingRate: zcrRate,
+      observation,
+      flagged,
+    });
+  }
+
+  // Multi-window 256-point DFT across 5 evenly spaced active offsets for stable spectral centroid & flatness
   const fftN = 256;
   const windowOffsets = [0.15, 0.32, 0.5, 0.68, 0.85]
     .map((frac) => Math.max(0, Math.min(sampleCount - fftN, Math.floor(sampleCount * frac))))
@@ -463,203 +298,14 @@ function computeLocalAcousticAntiSpoofing(
   const spectralFlatness =
     validWindows > 0 ? Number((flatnessAccum / validWindows).toFixed(3)) : null;
 
-  // 3. Multi-Segment Overlapping Analysis (3.0s window, 1.5s hop)
-  const windowSec = 3.0;
-  const hopSec = 1.5;
-  const windowSamples = Math.floor(windowSec * sampleRate);
-  const hopSamples = Math.floor(hopSec * sampleRate);
-
-  const segmentFindings: AudioSegmentFinding[] = [];
-  const activeSegmentScores: number[] = [];
-  const rmsValues: number[] = [];
-
-  for (let start = 0; start + windowSamples <= sampleCount || (start === 0 && sampleCount > 0); start += hopSamples) {
-    const end = Math.min(sampleCount, start + windowSamples);
-    const count = end - start;
-    if (count < sampleRate * 0.5) break;
-
-    let sqSum = 0;
-    let zcr = 0;
-    let digitalZeros = 0;
-
-    for (let i = start; i < end; i++) {
-      const v = samples[i];
-      sqSum += v * v;
-      if (Math.abs(v) < 0.001) digitalZeros++;
-      if (i > start && ((samples[i] >= 0 && samples[i - 1] < 0) || (samples[i] < 0 && samples[i - 1] >= 0))) {
-        zcr++;
-      }
-    }
-
-    const rms = Math.sqrt(sqSum / count);
-    const rmsDb = Number((20 * Math.log10(Math.max(rms, 1e-6))).toFixed(1));
-    const zcrRate = Number((zcr / count).toFixed(4));
-    const digitalZeroRatio = digitalZeros / count;
-    rmsValues.push(rmsDb);
-
-    const startSec = Number((start / sampleRate).toFixed(1));
-    const endSec = Number((end / sampleRate).toFixed(1));
-
-    // Pitch micro-jitter estimation across voiced frames in this segment
-    let pitchJitter = 0.015;
-    if (rmsDb > -45) {
-      const frameSize = 480; // 30ms
-      const pitchPeriods: number[] = [];
-      for (let f = start; f + frameSize < end; f += 240) {
-        let maxCorr = 0;
-        let bestLag = -1;
-        // Search lag 35 to 215 samples (75 Hz - 450 Hz)
-        for (let lag = 35; lag <= 215; lag++) {
-          let corr = 0;
-          for (let j = 0; j < frameSize - lag; j++) {
-            corr += samples[f + j] * samples[f + j + lag];
-          }
-          if (corr > maxCorr) {
-            maxCorr = corr;
-            bestLag = lag;
-          }
-        }
-        if (maxCorr > 0.18 && bestLag !== -1) {
-          pitchPeriods.push(bestLag);
-        }
-      }
-      if (pitchPeriods.length >= 4) {
-        let jitterSum = 0;
-        for (let p = 1; p < pitchPeriods.length; p++) {
-          jitterSum += Math.abs(pitchPeriods[p] - pitchPeriods[p - 1]) / pitchPeriods[p];
-        }
-        pitchJitter = jitterSum / (pitchPeriods.length - 1);
-      }
-    }
-
-    // Segment anomaly evaluation
-    let segmentScore = 48;
-    const segmentCues: string[] = [];
-
-    if (rmsDb < -52) {
-      segmentScore = 42;
-      segmentFindings.push({
-        startSec,
-        endSec,
-        timestampLabel: `${formatAudioTime(startSec)} – ${formatAudioTime(endSec)}`,
-        rmsDb,
-        zeroCrossingRate: zcrRate,
-        observation: 'Inter-phrase pause / low-energy ambient region.',
-        flagged: false,
-        anomalyScore: 42,
-        modelPrediction: 'neutral_pause',
-      });
-      continue;
-    }
-
-    // Neural vocoder & synthetic speech acoustic markers
-    if (digitalZeroRatio > 0.12 && rmsDb > -45) {
-      segmentScore += 16;
-      segmentCues.push('near-zero gated floor');
-    }
-    if (pitchJitter < 0.0042) {
-      // Unnaturally flat pitch micro-jitter typical of TTS generators
-      segmentScore += 22;
-      segmentCues.push('synthetic pitch rigidity (jitter < 0.4%)');
-    } else if (pitchJitter > 0.009) {
-      segmentScore -= 14;
-    }
-    if (zcrRate > 0.26 && (highFreqEnergyRatio ?? 0) >= 0.38) {
-      segmentScore += 14;
-      segmentCues.push('metallic vocoder high-freq sibilance');
-    }
-    if (spectralFlatness !== null && spectralFlatness < 0.07) {
-      segmentScore += 10;
-      segmentCues.push('harmonic phase locking');
-    }
-
-    segmentScore = Math.max(12, Math.min(94, segmentScore));
-    activeSegmentScores.push(segmentScore);
-
-    const isSynthetic = segmentScore >= 66;
-    const isHuman = segmentScore <= 36;
-    const observation = isSynthetic
-      ? `Elevated synthetic speech indicators (${segmentCues.join(', ') || 'vocoder phase regularities'}).`
-      : isHuman
-        ? 'Organic pitch micro-jitter and natural acoustic reverberation dynamics.'
-        : 'Nominal acoustic characteristics.';
-
-    segmentFindings.push({
-      startSec,
-      endSec,
-      timestampLabel: `${formatAudioTime(startSec)} – ${formatAudioTime(endSec)}`,
-      rmsDb,
-      zeroCrossingRate: zcrRate,
-      observation,
-      flagged: isSynthetic,
-      anomalyScore: segmentScore,
-      modelPrediction: isSynthetic ? 'synthetic_voice' : isHuman ? 'natural_voice' : 'inconclusive',
-    });
-  }
-
-  // 4. Documented Segment Score Aggregation
-  let aggregatedScore = 50;
-  if (activeSegmentScores.length > 0) {
-    const sorted = [...activeSegmentScores].sort((a, b) => b - a);
-    const topCount = Math.min(sorted.length, 2);
-    const topMean = sorted.slice(0, topCount).reduce((a, b) => a + b, 0) / topCount;
-    const overallMean = sorted.reduce((a, b) => a + b, 0) / sorted.length;
-    // Weighted combination favoring peak suspicious regions while factoring overall context
-    aggregatedScore = Math.round(topMean * 0.72 + overallMean * 0.28);
-  }
-
-  // 5. Categorization per Section 2 of PDF
-  let assessmentCategory:
-    | 'Likely synthetic or spoofed speech'
-    | 'Likely genuine human speech'
-    | 'Inconclusive / insufficient evidence'
-    | 'Analysis unavailable because of a technical failure';
-
-  if (activeSegmentScores.length === 0) {
-    assessmentCategory = 'Inconclusive / insufficient evidence';
-  } else if (aggregatedScore >= 68) {
-    assessmentCategory = 'Likely synthetic or spoofed speech';
-  } else if (aggregatedScore <= 35) {
-    assessmentCategory = 'Likely genuine human speech';
-  } else {
-    assessmentCategory = 'Inconclusive / insufficient evidence';
-  }
-
-  // Noise floor estimation
-  const sortedRms = [...rmsValues].sort((a, b) => a - b);
-  const noiseFloorDb =
-    sortedRms.length >= 3 ? Number(sortedRms[Math.floor(sortedRms.length * 0.15)].toFixed(1)) : null;
-
-  const activeRms = rmsValues.filter((v) => v > -58);
+  const activeRms = rmsValues.filter((v) => v > -60);
   const dynamicRangeDb =
     activeRms.length >= 2
       ? Number((Math.max(...activeRms) - Math.min(...activeRms)).toFixed(1))
       : 0;
 
-  const detectedIndicators: string[] = [];
-  const uncertainSignals: string[] = [];
-  const naturalCues: string[] = [];
-
-  if (aggregatedScore >= 68) {
-    detectedIndicators.push(
-      'Acoustic vocoder harmonic clustering and pitch micro-jitter suppression characteristic of synthetic voice cloning / TTS.',
-    );
-    if (noiseFloorDb !== null && noiseFloorDb < -55) {
-      detectedIndicators.push(`Digital silence floor (${noiseFloorDb} dB) with instantaneous inter-word gating.`);
-    }
-  } else if (aggregatedScore <= 35) {
-    naturalCues.push('Natural vocal fold micro-jitter (> 0.9%) and organic frequency modulation.');
-    if (noiseFloorDb !== null && noiseFloorDb > -48) {
-      naturalCues.push(`Continuous ambient room acoustic floor (${noiseFloorDb} dB).`);
-    }
-  } else {
-    uncertainSignals.push('Acoustic signals fall in the inconclusive range (neither clear vocoder artifacts nor definitive natural room cues).');
-  }
-
   return {
-    aggregatedScore,
-    assessmentCategory,
-    segmentFindings,
+    waveformPeaks,
     spectralCentroidHz,
     highFreqEnergyRatio,
     silenceRatio: Number((silentCount / sampleCount).toFixed(3)),
@@ -667,11 +313,20 @@ function computeLocalAcousticAntiSpoofing(
     clippingRate: Number((clippedCount / sampleCount).toFixed(4)),
     noiseFloorDb,
     spectralFlatness,
-    waveformPeaks,
-    detectedIndicators,
-    uncertainSignals,
-    naturalCues,
+    detectedIndicators: [],
+    uncertainSignals: [],
+    naturalCues: [],
+    segments,
   };
+}
+
+export interface AudioPipelineOutput {
+  detectors: DetectorResult[];
+  watermarks: WatermarkFinding[];
+  audioProfile: AudioProfile;
+  geminiStatus: 'completed' | 'failed';
+  geminiModelUsed: string | null;
+  geminiFailureDetail: string | null;
 }
 
 export async function runAudioDetectionPipeline(options: {
@@ -688,301 +343,514 @@ export async function runAudioDetectionPipeline(options: {
 
   onStageProgress?.(
     'forensic_analysis',
-    'Decoding audio stream to 16 kHz mono PCM and extracting multi-segment acoustic vocoder features.',
+    'Decoding 16 kHz PCM waveform and computing multi-window spectral centroid, flatness, noise floor, silence ratio, and dynamic range.',
   );
+  const audioProfile = await computeAcousticProfile(filePath);
 
-  // 1. Fast audio decode
-  const decoded = await decodeAudioToPcm(filePath, 35);
-  const sampleCount = decoded.samples.length;
-
-  if (sampleCount === 0) {
-    const errorDetector: DetectorResult = {
-      id: 'voice_cloning_biometric',
-      methodName: 'Specialized Neural Voice-Cloning & Anti-Spoofing Detector',
-      category: 'signal',
-      status: 'failed',
-      ran: false,
-      resultSummary: 'Analysis unavailable because of a technical failure — audio stream could not be decoded.',
-      rawSignalScore: null,
-      reliability: 'High',
-      calibrationStatus: 'Calibrated',
-      applicability: '16 kHz mono speech streams',
-      evidenceStrength: 'Low',
-      evidence: ['Failed to decode valid PCM audio data.'],
-      limitations: ['Audio container may be corrupted or codec unsupported.'],
-      toolUsed: 'TruthLens Audio Decoder',
-      correlationGroup: 'voice_cloning_biometric',
-    };
-    return {
-      detectors: [errorDetector, provenance.synthIdDetector],
-      watermarks: provenance.provenanceWatermarks,
-      audioProfile: {
-        waveformPeaks: [0.1, 0.2, 0.1],
-        spectralCentroidHz: null,
-        highFreqEnergyRatio: null,
-        silenceRatio: 1,
-        dynamicRangeDb: 0,
-        clippingRate: 0,
-        segments: [],
-        assessmentCategory: 'Analysis unavailable because of a technical failure',
-      },
-      geminiStatus: 'failed',
-      geminiModelUsed: null,
-      geminiFailureDetail: 'Audio stream decode failed.',
-    };
-  }
-
-  // 2. High-speed local acoustic anti-spoofing analysis (< 20ms)
-  const localAnalysis = computeLocalAcousticAntiSpoofing(decoded.samples, decoded.sampleRate);
-
-  // 3. Candidate model query (garystafford/wav2vec2-deepfake-voice-detector) via HF API / custom endpoint
   onStageProgress?.(
-    'forensic_analysis',
-    'Running specialized audio anti-spoofing classifier (Wav2Vec2 deepfake detector & vocoder analysis).',
+    'ai_assessment',
+    'Evaluating audio for multi-indicator AI-generated speech cues, prosody, vocoder artifacts, and separating detected evidence from uncertain signals.',
   );
-  const modelQuery = await queryTrainedAudioDeepfakeClassifier(decoded.pcmBuffer);
 
-  // 4. Combined primary score calculation
-  let primaryScore = localAnalysis.aggregatedScore;
-  let modelUsedLabel = 'TruthLens High-Speed Acoustic Anti-Spoofing Classifier';
-  let primaryReliability: DetectorResult['reliability'] = 'Moderate';
-  let primaryStrength: DetectorResult['evidenceStrength'] = 'Moderate';
+  // Prepare audio payload for Gemini (cap at ~12MB inline or transcode snippet to MP3 if oversized)
+  let audioBytes = await fs.readFile(filePath);
+  let audioMime = metadata.detectedMime;
+  if (audioMime === 'audio/x-wav' || audioMime === 'audio/vnd.wave') audioMime = 'audio/wav';
+  if (audioMime === 'audio/x-m4a' || audioMime === 'audio/m4a') audioMime = 'audio/mp4';
 
-  if (modelQuery.ran && modelQuery.score !== null) {
-    // If pretrained Wav2Vec2 inference succeeded, combine it with segment acoustic score
-    primaryScore = Math.round(modelQuery.score * 0.65 + localAnalysis.aggregatedScore * 0.35);
-    modelUsedLabel = modelQuery.modelUsed;
-    primaryReliability = 'High';
-    primaryStrength = primaryScore >= 68 ? 'Strong' : 'Moderate';
+  if (audioBytes.length > 12 * 1024 * 1024) {
+    const { stdout } = await execFileAsync(
+      'ffmpeg',
+      ['-i', filePath, '-t', '60', '-ac', '1', '-ar', '22050', '-b:a', '96k', '-f', 'mp3', '-v', 'error', 'pipe:1'],
+      { encoding: 'buffer', maxBuffer: 12 * 1024 * 1024, timeout: 25_000 },
+    );
+    audioBytes = stdout;
+    audioMime = 'audio/mpeg';
   }
-
-  // Re-evaluate assessment category against Section 2 of PDF
-  let assessmentCategory = localAnalysis.assessmentCategory;
-  if (primaryScore >= 68) {
-    assessmentCategory = 'Likely synthetic or spoofed speech';
-  } else if (primaryScore <= 35) {
-    assessmentCategory = 'Likely genuine human speech';
-  } else {
-    assessmentCategory = 'Inconclusive / insufficient evidence';
-  }
-
-  // 5. Metadata encoder check (ElevenLabs, OpenAI, Suno, XTTS...)
-  const encoderAiPattern = /elevenlabs|murf|playht|resemble|bark|tortoise|vits|xtts|suno|udio|lyria|openai[\s_-]*tts|coqui|fish[\s_-]*audio/i;
-  const encoderMatchesAi = Boolean(metadata.encoder && encoderAiPattern.test(metadata.encoder));
-  if (encoderMatchesAi) {
-    primaryScore = Math.max(primaryScore, 84);
-    assessmentCategory = 'Likely synthetic or spoofed speech';
-    localAnalysis.detectedIndicators.unshift(`Audio container encoder tag ("${metadata.encoder}") confirms AI speech generation.`);
-  }
-
-  // 6. Non-blocking fast Gemini explanation (max 5s timeout, ThinkingLevel.LOW)
-  // Per Section 2 of PDF: Gemini explains actual detector findings, but does not invent or replace them.
-  onStageProgress?.('ai_assessment', 'Synthesizing forensic observations and anti-spoofing evidence.');
 
   let aiAudio: GeminiAudioForensicsResponse | null = null;
   let aiModelUsed: string | null = null;
   let aiAudioError: string | null = null;
 
   try {
-    const promptText = [
-      'You are explaining the findings of a specialized audio deepfake classifier.',
-      `Classifier Result: Score ${primaryScore}/100 (${assessmentCategory}).`,
-      `Model: ${modelUsedLabel}.`,
-      `Acoustic Metrics: Spectral Centroid: ${localAnalysis.spectralCentroidHz ?? 'N/A'} Hz | High-Freq Energy: ${localAnalysis.highFreqEnergyRatio ?? 'N/A'} | Silence Floor: ${localAnalysis.noiseFloorDb ?? 'N/A'} dB | Dynamic Range: ${localAnalysis.dynamicRangeDb} dB.`,
-      `Indicators: ${localAnalysis.detectedIndicators.join('; ') || 'No critical vocoder anomalies'}.`,
-      'Explain these technical detector findings clearly and concisely, maintaining strict adherence to the classifier output.',
-    ].join('\n');
-
     const res = await runStructuredGeminiAnalysisWithMeta<GeminiAudioForensicsResponse>({
-      parts: [{ text: promptText }],
-      responseSchema: FAST_AUDIO_FORENSICS_SCHEMA,
+      parts: [
+        {
+          inlineData: {
+            mimeType: audioMime,
+            data: audioBytes.toString('base64'),
+          },
+        },
+        {
+          text: [
+            'Perform a rigorous multi-indicator forensic assessment of this audio recording for signs of AI-generated / synthetic speech (TTS, neural voice cloning, vocoder synthesis) vs genuine human microphone capture.',
+            'Measured deterministic PCM acoustic telemetry:',
+            `- Format: ${metadata.audioFormat ?? 'Unknown'}, Codec: ${metadata.codec ?? 'Unknown'}, Duration: ${metadata.durationSeconds ?? 'Unknown'}s, Sample Rate: ${metadata.sampleRate ?? 'Unknown'} Hz, Channels: ${metadata.audioChannels ?? 'Unknown'}`,
+            `- Multi-window Spectral Centroid: ${audioProfile.spectralCentroidHz ?? 'N/A'} Hz | High-Freq (>=4kHz) Energy Ratio: ${audioProfile.highFreqEnergyRatio ?? 'N/A'} | Spectral Flatness: ${audioProfile.spectralFlatness ?? 'N/A'}`,
+            `- 15th-Percentile Noise Floor: ${audioProfile.noiseFloorDb ?? 'N/A'} dB | Silence Ratio: ${(audioProfile.silenceRatio * 100).toFixed(1)}% | Dynamic Range: ${audioProfile.dynamicRangeDb} dB | Clipping Rate: ${(audioProfile.clippingRate * 100).toFixed(2)}%`,
+            '',
+            'MULTI-INDICATOR EVALUATION RULES:',
+            '1. Evaluate 5 distinct acoustic dimensions independently: (a) neural vocoder/spectral artifacts (metallic buzz, phase smearing, harmonic shimmer), (b) unnatural prosody/intonation cadence, (c) synthetic breathing or unnaturally gated inter-phrase pauses, (d) timbre/formant instability or phoneme slurring, and (e) room-tone discontinuity.',
+            '2. Clearly separate concrete DETECTED synthetic speech evidence (detectedSyntheticEvidence) from UNCERTAIN signals (uncertainSignals, e.g., clean studio mic, podcast compression, noise suppression like Krisp/RNNoise, or scripted broadcast reading) and NATURAL human cues (naturalHumanCues, e.g., organic breath intakes, micro-hesitations, natural room acoustics).',
+            '3. NEVER assign a high AI score (>= 70) from a single isolated cue — only assign >= 70 when MULTIPLE independent speech indicators clearly point to synthetic speech. When multiple clear AI speech indicators converge, reflect that stronger confidence appropriately (e.g., 72–90), while never claiming 100% certainty.',
+            '4. If no intelligible human speech is present (e.g. pure tone, instrumental music, ambient sound), set speechDetected=false and leave speech-only scores null.',
+          ].join('\n'),
+        },
+      ],
+      responseSchema: AUDIO_FORENSICS_SCHEMA,
       thinkingLevel: ThinkingLevel.LOW,
-      timeoutMs: 6_500, // fast non-blocking timeout
+      timeoutMs: 32_000,
+      onRetry: (evt: GeminiRetryEvent) => {
+        onStageProgress?.(
+          'ai_assessment',
+          `Gemini audio review retrying (${evt.attempt}/${evt.totalAttempts} → ${evt.nextModel} in ${(evt.delayMs / 1000).toFixed(1)}s): ${evt.reason}`,
+          'retrying',
+        );
+      },
     });
     aiAudio = res.data;
     aiModelUsed = res.modelUsed;
   } catch (err) {
-    aiAudioError = err instanceof Error ? err.message : 'Fast explanation bypassed.';
+    aiAudioError = err instanceof Error ? err.message : 'Gemini audio forensic analysis failed.';
   }
 
-  // 7. Assemble Structured AudioProfile
-  const audioProfile: AudioProfile = {
-    waveformPeaks: localAnalysis.waveformPeaks,
-    spectralCentroidHz: localAnalysis.spectralCentroidHz,
-    highFreqEnergyRatio: localAnalysis.highFreqEnergyRatio,
-    silenceRatio: localAnalysis.silenceRatio,
-    dynamicRangeDb: localAnalysis.dynamicRangeDb,
-    clippingRate: localAnalysis.clippingRate,
-    noiseFloorDb: localAnalysis.noiseFloorDb,
-    spectralFlatness: localAnalysis.spectralFlatness,
-    speechDetected: true,
-    syntheticIndicatorCount: localAnalysis.detectedIndicators.length,
-    detectedIndicators: localAnalysis.detectedIndicators,
-    uncertainSignals: localAnalysis.uncertainSignals,
-    naturalCues: localAnalysis.naturalCues,
-    segments: localAnalysis.segmentFindings,
-    modelUsed: modelUsedLabel,
-    modelRawScore: primaryScore,
-    assessmentCategory,
-  };
+  // Merge any AI timestamp notes into segment observations
+  if (aiAudio?.notableTimestampObservations?.length) {
+    for (const obs of aiAudio.notableTimestampObservations) {
+      audioProfile.segments.push({
+        startSec: 0,
+        endSec: 0,
+        timestampLabel: obs.timestampLabel,
+        rmsDb: 0,
+        zeroCrossingRate: 0,
+        observation: `Multimodal observation: ${obs.observation}`,
+        flagged: true,
+      });
+    }
+  }
 
-  const primaryPolarity: EvidencePolarity =
-    primaryScore >= 62 ? 'ai_indicator' : primaryScore <= 38 ? 'natural_capture' : 'neutral';
+  const encoderAiPattern = /elevenlabs|murf|playht|resemble|bark|tortoise|vits|xtts|suno|udio|lyria|openai[\s_-]*tts|coqui|fish[\s_-]*audio/i;
+  const encoderMatchesAi = Boolean(metadata.encoder && encoderAiPattern.test(metadata.encoder));
 
-  const primarySummary =
-    assessmentCategory === 'Likely synthetic or spoofed speech'
-      ? `Likely synthetic or spoofed speech (${primaryScore}/100). Model detected acoustic vocoder artifacts, pitch rigidity, and digital silence gating.`
-      : assessmentCategory === 'Likely genuine human speech'
-        ? `Likely genuine human speech (${primaryScore}/100). Model verified organic pitch micro-jitter and authentic room acoustics.`
-        : `Inconclusive / insufficient evidence (${primaryScore}/100). Acoustic cues do not exhibit definitive synthetic vocoder patterns or strong organic indicators.`;
+  // Deterministic PCM acoustic indicators (clearly split between concrete cues and uncertain signals)
+  const pcmDetectedCues: string[] = [];
+  const pcmUncertainSignals: string[] = [];
+  const pcmNaturalCues: string[] = [];
+
+  const hasDigitalZeroFloor =
+    audioProfile.noiseFloorDb !== null &&
+    audioProfile.noiseFloorDb !== undefined &&
+    audioProfile.noiseFloorDb <= -55 &&
+    audioProfile.silenceRatio >= 0.06 &&
+    audioProfile.silenceRatio <= 0.72;
+
+  const hasCompressedFlatDynamics =
+    audioProfile.dynamicRangeDb > 0 &&
+    audioProfile.dynamicRangeDb <= 3.2 &&
+    (metadata.durationSeconds ?? 0) >= 3;
+
+  const hasElevatedHighFreqSibilance =
+    audioProfile.highFreqEnergyRatio !== null &&
+    audioProfile.highFreqEnergyRatio >= 0.42 &&
+    audioProfile.segments.some((s) => s.zeroCrossingRate > 0.28);
+
+  if (hasDigitalZeroFloor) {
+    pcmUncertainSignals.push(
+      `Near-digital-zero quiet floor (${audioProfile.noiseFloorDb} dB across ${(audioProfile.silenceRatio * 100).toFixed(1)}% quiet frames) — commonly seen in neural TTS exports, though studio noise-gating/Krisp can produce similar silence.`,
+    );
+  } else if (
+    audioProfile.noiseFloorDb !== null &&
+    audioProfile.noiseFloorDb !== undefined &&
+    audioProfile.noiseFloorDb > -48 &&
+    audioProfile.noiseFloorDb < -22
+  ) {
+    pcmNaturalCues.push(
+      `Continuous ambient acoustic noise floor (${audioProfile.noiseFloorDb} dB) consistent with live microphone room tone.`,
+    );
+  }
+
+  if (hasCompressedFlatDynamics) {
+    pcmUncertainSignals.push(
+      `Narrow inter-window dynamic range (${audioProfile.dynamicRangeDb} dB) — occurs in steady TTS prosody as well as heavily compressed podcast/broadcast mastering.`,
+    );
+  } else if (audioProfile.dynamicRangeDb >= 7) {
+    pcmNaturalCues.push(
+      `Expressive dynamic range (${audioProfile.dynamicRangeDb} dB) across active speech windows.`,
+    );
+  }
+
+  if (hasElevatedHighFreqSibilance) {
+    pcmDetectedCues.push(
+      `Elevated high-frequency energy ratio (${((audioProfile.highFreqEnergyRatio ?? 0) * 100).toFixed(1)}% >= 4 kHz) paired with high zero-crossing sibilance density.`,
+    );
+  }
+
+  // Only treat deterministic PCM as a corroborating synthetic signal if multiple PCM traits align
+  const pcmCorroboratesSynthetic =
+    (hasDigitalZeroFloor && hasCompressedFlatDynamics) ||
+    (hasDigitalZeroFloor && hasElevatedHighFreqSibilance);
+
+  // Tally independent synthetic speech indicators across all modalities
+  const speechDetected = Boolean(aiAudio?.speechDetected);
+  const independentIndicators: string[] = [];
+
+  if (speechDetected && aiAudio) {
+    if (aiAudio.vocoderArtifactsDetected || aiAudio.artifactScore >= 64) {
+      independentIndicators.push('Neural vocoder / metallic spectral artifacts');
+    }
+    if (aiAudio.unnaturalProsodyDetected || (typeof aiAudio.prosodyScore === 'number' && aiAudio.prosodyScore >= 64)) {
+      independentIndicators.push('Unnatural prosody / synthetic intonation cadence');
+    }
+    if (aiAudio.syntheticBreathingOrPausesDetected) {
+      independentIndicators.push('Synthetic breathing or artificially gated inter-phrase pauses');
+    }
+    if (
+      aiAudio.timbreOrFormantAnomaliesDetected ||
+      aiAudio.roomToneDiscontinuityDetected ||
+      (typeof aiAudio.voiceConsistencyScore === 'number' && aiAudio.voiceConsistencyScore >= 64)
+    ) {
+      independentIndicators.push('Voice timbre/formant anomalies or room-tone discontinuity');
+    }
+    if (pcmCorroboratesSynthetic) {
+      independentIndicators.push('Deterministic PCM digital-zero floor + uniform dynamic envelope');
+    }
+  }
+  if (encoderMatchesAi) {
+    independentIndicators.push(`AI synthesis encoder metadata tag ("${metadata.encoder}")`);
+  }
+
+  const indicatorCount = independentIndicators.length;
+
+  // Populate structured AudioProfile detected evidence vs uncertain signals vs natural cues
+  audioProfile.speechDetected = speechDetected;
+  audioProfile.syntheticIndicatorCount = indicatorCount;
+  audioProfile.detectedIndicators = [
+    ...(aiAudio?.detectedSyntheticEvidence ?? []),
+    ...pcmDetectedCues,
+    ...(encoderMatchesAi ? [`Audio container encoder matches known AI synthesis tool: "${metadata.encoder}".`] : []),
+  ];
+  audioProfile.uncertainSignals = [
+    ...(aiAudio?.uncertainSignals ?? []),
+    ...pcmUncertainSignals,
+  ];
+  audioProfile.naturalCues = [
+    ...(aiAudio?.naturalHumanCues ?? []),
+    ...pcmNaturalCues,
+  ];
+
+  // Multi-indicator calibrated AI-generated speech score:
+  // - Multiple corroborating indicators -> boost confidence proportionally (up to 94)
+  // - Single isolated indicator -> cap conservatively at <= 58 (never auto-label as AI-generated from 1 cue)
+  let calibratedAiSpeechScore: number | null = null;
+  let aiSpeechReliability: DetectorResult['reliability'] = 'Experimental';
+  let aiSpeechWeight = 0.5;
+  let aiSpeechStrength: DetectorResult['evidenceStrength'] = 'Low';
+  let aiSpeechSummary = aiAudio?.speechDetected
+    ? aiAudio.aiSpeechSummary
+    : 'Not applicable — no intelligible human speech detected in this recording.';
+  const aiSpeechEvidence = [...(aiAudio?.aiSpeechEvidence ?? [])];
+
+  if (aiAudio && aiAudio.speechDetected && typeof aiAudio.aiSpeechScore === 'number') {
+    const baseScore = Math.max(5, Math.min(92, aiAudio.aiSpeechScore));
+    if (indicatorCount >= 3) {
+      calibratedAiSpeechScore = Math.min(94, Math.max(baseScore + 12, 76));
+      aiSpeechReliability = 'Moderate';
+      aiSpeechWeight = 0.78;
+      aiSpeechStrength = 'Strong';
+      aiSpeechSummary = `${aiAudio.aiSpeechSummary} Corroborated by ${indicatorCount} independent audio indicators (${independentIndicators.slice(0, 3).join('; ')}).`;
+      aiSpeechEvidence.unshift(
+        `Multi-indicator corroboration (${indicatorCount} independent cues): ${independentIndicators.join('; ')}.`,
+      );
+    } else if (indicatorCount === 2) {
+      calibratedAiSpeechScore = Math.min(89, Math.max(baseScore + 7, 68));
+      aiSpeechReliability = 'Moderate';
+      aiSpeechWeight = 0.68;
+      aiSpeechStrength = 'Moderate';
+      aiSpeechSummary = `${aiAudio.aiSpeechSummary} Supported by 2 corroborating audio indicators (${independentIndicators.join('; ')}).`;
+      aiSpeechEvidence.unshift(
+        `Multi-indicator corroboration (2 independent cues): ${independentIndicators.join('; ')}.`,
+      );
+    } else if (indicatorCount === 1 && baseScore >= 59) {
+      // Single-indicator anti-false-positive guard
+      calibratedAiSpeechScore = Math.min(58, baseScore);
+      aiSpeechReliability = 'Experimental';
+      aiSpeechWeight = 0.45;
+      aiSpeechStrength = 'Low';
+      aiSpeechSummary = `Uncertain signal only (${independentIndicators[0]}) — score capped at ${calibratedAiSpeechScore}/100 because a single audio indicator is insufficient to label speech as AI-generated. ${aiAudio.aiSpeechSummary}`;
+      aiSpeechEvidence.unshift(
+        `Single-indicator safeguard: Only 1 cue (${independentIndicators[0]}) was flagged without corroborating indicators; treated as uncertain signal rather than confirmed synthetic speech.`,
+      );
+    } else {
+      calibratedAiSpeechScore = baseScore;
+      aiSpeechReliability = 'Experimental';
+      aiSpeechWeight = 0.52;
+      aiSpeechStrength = baseScore <= 35 && audioProfile.naturalCues.length >= 2 ? 'Moderate' : 'Low';
+    }
+  }
+
+  const spectralPolarity: DetectorResult['signalPolarity'] =
+    pcmCorroboratesSynthetic && speechDetected
+      ? 'ai_indicator'
+      : pcmNaturalCues.length >= 2
+        ? 'natural_capture'
+        : 'neutral';
+
+  const spectralScore: number | null =
+    pcmCorroboratesSynthetic && speechDetected && indicatorCount >= 2
+      ? 66
+      : pcmNaturalCues.length >= 2 && indicatorCount === 0
+        ? 30
+        : null;
 
   const detectors: DetectorResult[] = [
-    // 1. Dedicated Specialized Anti-Spoofing Classifier (Primary)
+    aiAudio
+      ? {
+          id: 'ai_speech_classification',
+          methodName: 'AI-Generated Speech Classification',
+          category: 'ai_reasoning',
+          status: aiAudio.speechDetected ? 'completed' : 'not_applicable',
+          ran: aiAudio.speechDetected,
+          resultSummary: aiSpeechSummary,
+          rawSignalScore: calibratedAiSpeechScore,
+          signalPolarity:
+            calibratedAiSpeechScore === null
+              ? 'neutral'
+              : calibratedAiSpeechScore >= 62
+                ? 'ai_indicator'
+                : calibratedAiSpeechScore <= 38
+                  ? 'natural_capture'
+                  : 'neutral',
+          reliability: aiSpeechReliability,
+          reliabilityWeight: aiSpeechWeight,
+          calibrationStatus: 'Uncalibrated (Experimental)',
+          applicability: 'Spoken-word recordings (multi-indicator speech synthesis analysis)',
+          evidenceStrength: aiSpeechStrength,
+          evidence: [
+            ...aiSpeechEvidence,
+            ...(audioProfile.uncertainSignals.length > 0
+              ? [`Uncertain signals (not treated as proof): ${audioProfile.uncertainSignals.slice(0, 2).join(' ')}`]
+              : []),
+          ],
+          limitations: [
+            'Multimodal audio reasoning is experimental and can be influenced by heavy studio noise-gating, podcast compression, or low-bitrate codecs.',
+            'Single-indicator safeguard prevents automatic AI labeling unless multiple independent speech indicators align.',
+          ],
+          toolUsed: `Gemini Multi-Indicator Audio Analysis (${aiModelUsed ?? GEMINI_FORENSIC_MODEL})`,
+          correlationGroup: 'audio_ai_speech',
+        }
+      : {
+          id: 'ai_speech_classification',
+          methodName: 'AI-Generated Speech Classification',
+          category: 'ai_reasoning',
+          status: 'failed',
+          ran: false,
+          resultSummary: `Failed (recoverable) — Gemini audio classification unavailable: ${aiAudioError}`,
+          rawSignalScore: null,
+          reliability: 'Experimental',
+          calibrationStatus: 'Uncalibrated (Experimental)',
+          applicability: 'Spoken-word recordings',
+          evidenceStrength: 'Low',
+          evidence: [`Upstream error: ${aiAudioError}`],
+          limitations: ['Excluded from scoring; retry Gemini analysis when available.'],
+          toolUsed: `Gemini Multi-Indicator Audio Analysis (${GEMINI_FORENSIC_MODEL})`,
+          correlationGroup: 'audio_ai_speech',
+        },
     {
       id: 'voice_cloning_biometric',
-      methodName: 'Specialized Neural Voice-Cloning & Anti-Spoofing Detector',
+      methodName: 'Specialized Voice-Cloning Biometric Detector',
       category: 'signal',
-      status: 'completed',
-      ran: true,
-      resultSummary: primarySummary,
-      rawSignalScore: primaryScore,
-      signalPolarity: primaryPolarity,
-      reliability: primaryReliability,
-      reliabilityWeight: 0.85,
+      status: 'unavailable',
+      ran: false,
+      resultSummary:
+        'Not performed — dedicated ASVspoof / RawNet2 / AASIST neural anti-spoofing model is not installed in this server environment.',
+      rawSignalScore: null,
+      reliability: 'High',
       calibrationStatus: 'Calibrated',
-      applicability: '16 kHz mono speech streams (Wav2Vec2 sequence classification & vocoder feature profiling)',
-      evidenceStrength: primaryStrength,
+      applicability: 'Voice cloning and neural vocoder detection',
+      evidenceStrength: 'Low',
       evidence: [
-        `Assessment category: ${assessmentCategory} (Score: ${primaryScore}/100).`,
-        `Detector model: ${modelUsedLabel}.`,
-        modelQuery.details,
-        `Multi-segment analysis: evaluated ${localAnalysis.segmentFindings.length} overlapping 3.0s windows.`,
-        ...localAnalysis.detectedIndicators.map((i) => `Detected cue: ${i}`),
-        ...localAnalysis.naturalCues.map((c) => `Natural capture cue: ${c}`),
+        'Requires a dedicated neural anti-spoofing classifier (e.g., AASIST/RawNet2) plus speaker reference audio for biometric verification.',
       ],
       limitations: [
-        'Lossy audio compression (e.g., 64kbps MP3) naturally attenuates high frequencies and can obscure subtle vocoder artifacts.',
-        'Aggressive noise-suppression algorithms (e.g. Krisp, RNNoise) can introduce gating similar to neural TTS floors.',
-        'No single detector guarantees 100% accuracy across unseen generative models.',
+        'Without a reference speaker enrollment sample, verifying whether a specific person’s voice was cloned is not possible.',
       ],
-      toolUsed: modelUsedLabel,
+      toolUsed: 'Not integrated (Unavailable)',
       correlationGroup: 'voice_cloning_biometric',
     },
-    // 2. AI-Generated Speech Classification (Multimodal synthesis)
-    {
-      id: 'ai_speech_classification',
-      methodName: 'AI-Generated Speech Classification',
-      category: 'ai_reasoning',
-      status: 'completed',
-      ran: true,
-      resultSummary: aiAudio?.aiSpeechSummary || primarySummary,
-      rawSignalScore: primaryScore,
-      signalPolarity: primaryPolarity,
-      reliability: 'Moderate',
-      reliabilityWeight: 0.68,
-      calibrationStatus: 'Deterministic Check',
-      applicability: 'Spoken-word recordings (prosody, vocoder, and speech continuity review)',
-      evidenceStrength: primaryStrength,
-      evidence: [
-        ...(aiAudio?.aiSpeechEvidence ?? [primarySummary]),
-        ...(localAnalysis.detectedIndicators.length > 0 ? localAnalysis.detectedIndicators : []),
-      ],
-      limitations: [
-        'Explains observed anti-spoofing classifier findings without inventing unsupported cues.',
-      ],
-      toolUsed: aiModelUsed ? `Gemini Explanation (${aiModelUsed})` : 'TruthLens Acoustic Reasoning',
-      correlationGroup: 'audio_ai_speech',
-    },
-    // 3. Spectral & Frequency-Band Analysis
     {
       id: 'audio_spectral_analysis',
       methodName: 'Spectral & Frequency-Band Analysis',
       category: 'signal',
       status: 'completed',
       ran: true,
-      resultSummary: `Spectral centroid ${localAnalysis.spectralCentroidHz ?? 'N/A'} Hz; high-freq share ${localAnalysis.highFreqEnergyRatio !== null ? `${(localAnalysis.highFreqEnergyRatio * 100).toFixed(1)}%` : 'N/A'}; silence floor ${localAnalysis.noiseFloorDb ?? 'N/A'} dB; dynamic range ${localAnalysis.dynamicRangeDb} dB.`,
-      rawSignalScore: primaryPolarity === 'ai_indicator' ? Math.min(88, primaryScore + 4) : primaryScore,
-      signalPolarity: primaryPolarity,
-      reliability: 'Moderate',
-      reliabilityWeight: 0.55,
+      resultSummary: `Spectral centroid ${audioProfile.spectralCentroidHz ?? 'N/A'} Hz; high-freq (>=4 kHz) share ${audioProfile.highFreqEnergyRatio !== null ? `${(audioProfile.highFreqEnergyRatio * 100).toFixed(1)}%` : 'N/A'}; quiet floor ${audioProfile.noiseFloorDb ?? 'N/A'} dB; dynamic range ${audioProfile.dynamicRangeDb} dB.`,
+      rawSignalScore: spectralScore,
+      signalPolarity: spectralPolarity,
+      reliability: 'Low',
+      reliabilityWeight: 0.36,
       calibrationStatus: 'Deterministic Check',
       applicability: '16 kHz mono PCM multi-window DFT & noise-floor analysis',
-      evidenceStrength: primaryStrength,
+      evidenceStrength: spectralScore !== null ? 'Moderate' : 'Low',
       evidence: [
-        `Multi-window spectral centroid: ${localAnalysis.spectralCentroidHz ?? 'N/A'} Hz | Spectral flatness: ${localAnalysis.spectralFlatness ?? 'N/A'}.`,
-        `15th-percentile noise floor: ${localAnalysis.noiseFloorDb ?? 'N/A'} dB | Silence ratio: ${(localAnalysis.silenceRatio * 100).toFixed(1)}% | Dynamic range: ${localAnalysis.dynamicRangeDb} dB.`,
+        `Multi-window spectral centroid: ${audioProfile.spectralCentroidHz ?? 'N/A'} Hz | Spectral flatness: ${audioProfile.spectralFlatness ?? 'N/A'}.`,
+        `15th-percentile noise floor: ${audioProfile.noiseFloorDb ?? 'N/A'} dB | Silence ratio: ${(audioProfile.silenceRatio * 100).toFixed(1)}% | Dynamic range: ${audioProfile.dynamicRangeDb} dB.`,
+        ...pcmDetectedCues.map((c) => `Detected acoustic signal: ${c}`),
+        ...pcmUncertainSignals.map((u) => `Uncertain signal: ${u}`),
+        ...pcmNaturalCues.map((n) => `Natural capture cue: ${n}`),
       ],
       limitations: [
-        'Studio noise gates mimic near-digital-zero TTS silence floors.',
+        'Lossy MP3/AAC encoding naturally truncates upper frequency bands regardless of whether audio is real or synthetic.',
+        'Studio noise gates (e.g., Krisp, RNNoise) can mimic near-digital-zero TTS silence floors.',
       ],
-      toolUsed: 'TruthLens Multi-Window DFT Analyzer',
+      toolUsed: 'FFmpeg PCM Decoder + TruthLens Multi-Window DFT Analyzer',
       correlationGroup: 'audio_signal_metrics',
     },
-    // 4. Prosody & Speech Cadence Analysis
-    {
-      id: 'prosody_speech_pattern',
-      methodName: 'Prosody & Speech Cadence Analysis',
-      category: 'signal',
-      status: 'completed',
-      ran: true,
-      resultSummary: aiAudio?.prosodySummary || (primaryScore >= 68 ? 'Unnatural pitch micro-jitter and rigid cadence detected.' : 'Organic pitch modulation and human pause cadence.'),
-      rawSignalScore: primaryScore,
-      signalPolarity: primaryPolarity,
-      reliability: 'Moderate',
-      reliabilityWeight: 0.52,
-      calibrationStatus: 'Deterministic Check',
-      applicability: 'Intonation, micro-jitter, and rhythmic continuity',
-      evidenceStrength: primaryStrength,
-      evidence: aiAudio?.prosodyEvidence || [
-        primaryScore >= 68 ? 'Pitch micro-jitter < 0.4% indicating synthetic voice synthesis.' : 'Pitch micro-jitter > 0.8% consistent with human vocal fold physiology.',
-      ],
-      limitations: ['Broadcast reading and teleprompter reads naturally display uniform cadence.'],
-      toolUsed: 'TruthLens Vocal Jitter Analyzer',
-      correlationGroup: 'audio_prosody',
-    },
-    // 5. Acoustic Artifact & Vocoder Distortion Inspection
-    {
-      id: 'audio_artifact_analysis',
-      methodName: 'Acoustic Artifact & Vocoder Distortion Inspection',
-      category: 'signal',
-      status: 'completed',
-      ran: true,
-      resultSummary: aiAudio?.artifactSummary || (primaryScore >= 68 ? 'Vocoder harmonic phase locking and high-frequency gating detected.' : 'No metallic vocoder phase smearing detected.'),
-      rawSignalScore: primaryScore,
-      signalPolarity: primaryPolarity,
-      reliability: 'Moderate',
-      reliabilityWeight: 0.60,
-      calibrationStatus: 'Deterministic Check',
-      applicability: 'Neural vocoder phase coherence, gating, and harmonic roll-off',
-      evidenceStrength: primaryStrength,
-      evidence: aiAudio?.artifactEvidence || [
-        primaryScore >= 68 ? 'Spectral roll-off and harmonic clustering typical of HiFi-GAN/MelGAN vocoders.' : 'Natural harmonic distribution across speech formants.',
-      ],
-      limitations: ['Severe lossy MP3 compression can introduce acoustic artifacts.'],
-      toolUsed: 'TruthLens Vocoder Artifact Inspector',
-      correlationGroup: 'audio_artifacts',
-    },
-    // 6. Voice Timbre & Room-Tone Consistency
-    {
-      id: 'voice_consistency_analysis',
-      methodName: 'Voice Timbre & Room-Tone Consistency',
-      category: 'temporal',
-      status: 'completed',
-      ran: true,
-      resultSummary: aiAudio?.voiceConsistencySummary || 'Consistent vocal timbre and ambient acoustic profile verified across segments.',
-      rawSignalScore: primaryScore >= 68 ? 65 : 35,
-      signalPolarity: primaryPolarity === 'ai_indicator' ? 'ai_indicator' : 'natural_capture',
-      reliability: 'Low',
-      reliabilityWeight: 0.45,
-      calibrationStatus: 'Deterministic Check',
-      applicability: 'Acoustic continuity across segments',
-      evidenceStrength: 'Low',
-      evidence: aiAudio?.voiceConsistencyEvidence || ['Segment-by-segment acoustic continuity verified.'],
-      limitations: ['Multi-take studio recordings legitimately splice room tone.'],
-      toolUsed: 'TruthLens Temporal Room-Tone Inspector',
-      correlationGroup: 'audio_continuity',
-    },
-    // 7. Audio Container & Encoder Metadata Inspection
+    aiAudio
+      ? {
+          id: 'prosody_speech_pattern',
+          methodName: 'Prosody & Speech Cadence Analysis',
+          category: 'signal',
+          status: aiAudio.speechDetected ? 'completed' : 'not_applicable',
+          ran: aiAudio.speechDetected,
+          resultSummary: aiAudio.speechDetected
+            ? aiAudio.prosodySummary
+            : 'Not applicable (no speech detected).',
+          rawSignalScore:
+            aiAudio.speechDetected && typeof aiAudio.prosodyScore === 'number'
+              ? Math.max(5, Math.min(94, aiAudio.prosodyScore))
+              : null,
+          signalPolarity:
+            aiAudio.speechDetected && typeof aiAudio.prosodyScore === 'number'
+              ? aiAudio.prosodyScore >= 62
+                ? 'ai_indicator'
+                : aiAudio.prosodyScore <= 38
+                  ? 'natural_capture'
+                  : 'neutral'
+              : 'neutral',
+          reliability: 'Experimental',
+          reliabilityWeight: 0.54,
+          calibrationStatus: 'Uncalibrated (Experimental)',
+          applicability: 'Intonation, breathing, micro-pauses, and emotional rhythm',
+          evidenceStrength: aiAudio.speechDetected ? 'Moderate' : 'Low',
+          evidence: aiAudio.prosodyEvidence,
+          limitations: [
+            'Scripted narration, teleprompter reads, and trained broadcast speakers naturally exhibit regular cadence.',
+          ],
+          toolUsed: `Gemini Prosody Assessment (${aiModelUsed ?? GEMINI_FORENSIC_MODEL})`,
+          correlationGroup: 'audio_prosody',
+        }
+      : {
+          id: 'prosody_speech_pattern',
+          methodName: 'Prosody & Speech Cadence Analysis',
+          category: 'signal',
+          status: 'failed',
+          ran: false,
+          resultSummary: `Failed (recoverable) — Gemini prosody review unavailable: ${aiAudioError}`,
+          rawSignalScore: null,
+          reliability: 'Experimental',
+          calibrationStatus: 'Uncalibrated (Experimental)',
+          applicability: 'Intonation, breathing, micro-pauses, and emotional rhythm',
+          evidenceStrength: 'Low',
+          evidence: ['Excluded from scoring; retry Gemini analysis when available.'],
+          limitations: ['Upstream Gemini service unavailable.'],
+          toolUsed: `Gemini Prosody Assessment (${GEMINI_FORENSIC_MODEL})`,
+          correlationGroup: 'audio_prosody',
+        },
+    aiAudio
+      ? {
+          id: 'audio_artifact_analysis',
+          methodName: 'Acoustic Artifact & Vocoder Distortion Inspection',
+          category: 'signal',
+          status: 'completed',
+          ran: true,
+          resultSummary: aiAudio.artifactSummary,
+          rawSignalScore: Math.max(5, Math.min(94, aiAudio.artifactScore)),
+          signalPolarity:
+            aiAudio.artifactScore >= 62
+              ? 'ai_indicator'
+              : aiAudio.artifactScore <= 38
+                ? 'natural_capture'
+                : 'neutral',
+          reliability: aiAudio.vocoderArtifactsDetected ? 'Moderate' : 'Experimental',
+          reliabilityWeight: aiAudio.vocoderArtifactsDetected ? 0.64 : 0.48,
+          calibrationStatus: 'Uncalibrated (Experimental)',
+          applicability: 'Phase smearing, metallic vocoder buzz, abrupt noise-floor gating, and splice clicks',
+          evidenceStrength: aiAudio.vocoderArtifactsDetected ? 'Moderate' : 'Low',
+          evidence: aiAudio.artifactEvidence,
+          limitations: [
+            'Aggressive AI noise suppression (e.g., Krisp, RNNoise, Zoom) on authentic recordings can introduce similar gating and spectral artifacts.',
+          ],
+          toolUsed: `PCM Profile + Gemini Acoustic Artifact Review (${aiModelUsed ?? GEMINI_FORENSIC_MODEL})`,
+          correlationGroup: 'audio_artifacts',
+        }
+      : {
+          id: 'audio_artifact_analysis',
+          methodName: 'Acoustic Artifact & Vocoder Distortion Inspection',
+          category: 'signal',
+          status: 'failed',
+          ran: false,
+          resultSummary: `Failed (recoverable) — Gemini acoustic artifact review unavailable: ${aiAudioError}`,
+          rawSignalScore: null,
+          reliability: 'Experimental',
+          calibrationStatus: 'Uncalibrated (Experimental)',
+          applicability: 'Phase smearing, metallic vocoder buzz, abrupt noise-floor gating, and splice clicks',
+          evidenceStrength: 'Low',
+          evidence: ['Local PCM waveform & RMS/ZCR segments completed; Gemini vocoder review excluded from scoring.'],
+          limitations: ['Upstream Gemini service unavailable.'],
+          toolUsed: `PCM Profile + Gemini Acoustic Artifact Review (${GEMINI_FORENSIC_MODEL})`,
+          correlationGroup: 'audio_artifacts',
+        },
+    aiAudio
+      ? {
+          id: 'voice_consistency_analysis',
+          methodName: 'Voice Timbre & Room-Tone Consistency',
+          category: 'temporal',
+          status: aiAudio.speechDetected ? 'completed' : 'not_applicable',
+          ran: aiAudio.speechDetected,
+          resultSummary: aiAudio.speechDetected
+            ? aiAudio.voiceConsistencySummary
+            : 'Not applicable (no speech detected).',
+          rawSignalScore:
+            aiAudio.speechDetected && typeof aiAudio.voiceConsistencyScore === 'number'
+              ? Math.max(5, Math.min(94, aiAudio.voiceConsistencyScore))
+              : null,
+          signalPolarity:
+            aiAudio.speechDetected && typeof aiAudio.voiceConsistencyScore === 'number'
+              ? aiAudio.voiceConsistencyScore >= 62
+                ? 'ai_indicator'
+                : aiAudio.voiceConsistencyScore <= 38
+                  ? 'natural_capture'
+                  : 'neutral'
+              : 'neutral',
+          reliability: 'Experimental',
+          reliabilityWeight: 0.48,
+          calibrationStatus: 'Uncalibrated (Experimental)',
+          applicability: 'Speaker identity continuity and background acoustic floor across segments',
+          evidenceStrength: 'Low',
+          evidence: aiAudio.voiceConsistencyEvidence,
+          limitations: [
+            'Edited podcasts or multi-take studio recordings legitimately splice room tone across takes.',
+          ],
+          toolUsed: `Gemini Audio Continuity Review (${aiModelUsed ?? GEMINI_FORENSIC_MODEL})`,
+          correlationGroup: 'audio_continuity',
+        }
+      : {
+          id: 'voice_consistency_analysis',
+          methodName: 'Voice Timbre & Room-Tone Consistency',
+          category: 'temporal',
+          status: 'failed',
+          ran: false,
+          resultSummary: `Failed (recoverable) — Gemini continuity review unavailable: ${aiAudioError}`,
+          rawSignalScore: null,
+          reliability: 'Experimental',
+          calibrationStatus: 'Uncalibrated (Experimental)',
+          applicability: 'Speaker identity continuity and background acoustic floor across segments',
+          evidenceStrength: 'Low',
+          evidence: ['Excluded from scoring; retry Gemini analysis when available.'],
+          limitations: ['Upstream Gemini service unavailable.'],
+          toolUsed: `Gemini Audio Continuity Review (${GEMINI_FORENSIC_MODEL})`,
+          correlationGroup: 'audio_continuity',
+        },
     {
       id: 'audio_metadata_inspection',
       methodName: 'Audio Container & Encoder Metadata Inspection',
@@ -992,18 +860,21 @@ export async function runAudioDetectionPipeline(options: {
       resultSummary: encoderMatchesAi
         ? `Audio encoder tag ("${metadata.encoder}") matches a known AI audio synthesis platform.`
         : `Format: ${metadata.audioFormat || 'Unknown'}, Sample Rate: ${metadata.sampleRate ?? 'Unknown'} Hz, Bitrate: ${metadata.bitrate ? `${Math.round(metadata.bitrate / 1000)} kbps` : 'Unknown'}.`,
-      rawSignalScore: encoderMatchesAi ? 88 : null,
+      rawSignalScore: encoderMatchesAi ? 78 : null,
       signalPolarity: encoderMatchesAi ? 'ai_indicator' : 'neutral',
-      reliability: encoderMatchesAi ? 'High' : 'Low',
-      reliabilityWeight: encoderMatchesAi ? 0.78 : 0.3,
+      reliability: encoderMatchesAi ? 'Moderate' : 'Low',
+      reliabilityWeight: encoderMatchesAi ? 0.72 : 0.3,
       calibrationStatus: 'Deterministic Check',
       applicability: 'ID3, MP4/M4A atoms, RIFF/WAV headers',
-      evidenceStrength: encoderMatchesAi ? 'Strong' : 'Low',
+      evidenceStrength: encoderMatchesAi ? 'Moderate' : 'Low',
       evidence: [
         `Encoder / Tool: ${metadata.encoder || 'Not present'}.`,
         `Channels: ${metadata.audioChannels ?? 'Unknown'} | Codec: ${metadata.codec || 'Unknown'}.`,
+        `Metadata tags present: ${Object.keys(metadata.tags ?? {}).length}.`,
       ],
-      limitations: ['Audio transcoding strips or overwrites original encoder headers.'],
+      limitations: [
+        'Audio transcoding strips or overwrites original encoder headers; missing tags do not indicate AI generation.',
+      ],
       toolUsed: 'music-metadata + FFprobe',
       correlationGroup: 'metadata_context',
     },
